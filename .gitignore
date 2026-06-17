@@ -4,3 +4,4 @@ dist/
 *.log
 .taskwatch-data/
 web/dist/
+.playwright-mcp/
