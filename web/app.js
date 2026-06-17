@@ -1,17 +1,16 @@
-import {
-  B3ndHttpClient,
-  decodeHashContent,
-  newTaskId,
-  sha256HexUtf8,
-} from "/static/b3nd-http.js";
+import { B3ndHttpClient } from "/static/b3nd-http.js";
 
 const BASE = location.origin;
 const client = new B3ndHttpClient(BASE);
+
+// Discovered at boot via b3nd_status.
+let BASEPATH = "taskwatch://";
 
 const $list = document.getElementById("list");
 const $detail = document.getElementById("detail");
 const $error = document.getElementById("error");
 const $filterStatus = document.getElementById("filter-status");
+const $basepathLabel = document.getElementById("basepath-label");
 
 function showError(msg) {
   $error.textContent = msg;
@@ -41,178 +40,265 @@ function pill(status) {
   return `<span class="pill pill-${status}">${status}</span>`;
 }
 
-function taskCard(t) {
-  const ctx = t.context ?? {};
-  const ctxBits = [];
-  if (ctx.repo) ctxBits.push(escapeHtml(ctx.repo));
-  if (ctx.branch) ctxBits.push(`<span class="mono">${escapeHtml(ctx.branch)}</span>`);
-  if (ctx.agent) ctxBits.push(`@${escapeHtml(ctx.agent)}`);
-  const ctxLine = ctxBits.length ? `<div class="text-xs text-stone-500 mt-1">${ctxBits.join(" · ")}</div>` : "";
-  const tags = (t.tags ?? []).map((t) => `<span class="text-xs bg-stone-100 text-stone-700 px-2 py-0.5 rounded">${escapeHtml(t)}</span>`).join(" ");
-  return `
-    <div class="bg-white border border-stone-200 rounded-lg p-4 hover:border-stone-300 cursor-pointer" data-id="${t.id}">
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0">
-          <div class="flex items-center gap-2">
-            ${pill(t.status)}
-            <h3 class="font-medium truncate">${escapeHtml(t.title)}</h3>
-          </div>
-          ${ctxLine}
-          ${tags ? `<div class="mt-2 flex gap-1 flex-wrap">${tags}</div>` : ""}
-        </div>
-        <div class="text-xs text-stone-500 whitespace-nowrap">
-          <div>${t.updateCount} update${t.updateCount === 1 ? "" : "s"}</div>
-          <div>${relTime(t.updatedAt)}</div>
-          <div class="mono text-stone-400 mt-1">${t.id}</div>
-        </div>
-      </div>
-    </div>
-  `;
+function slugify(title) {
+  return title
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    .replace(/-+$/, "") || "task";
 }
+
+function nowTs() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    String(d.getUTCFullYear()) + p(d.getUTCMonth() + 1) + p(d.getUTCDate()) +
+    p(d.getUTCHours()) + p(d.getUTCMinutes()) + p(d.getUTCSeconds())
+  );
+}
+
+function parseTs(ts) {
+  return Date.UTC(
+    Number(ts.slice(0, 4)), Number(ts.slice(4, 6)) - 1,
+    Number(ts.slice(6, 8)), Number(ts.slice(8, 10)),
+    Number(ts.slice(10, 12)), Number(ts.slice(12, 14)),
+  );
+}
+
+function parseIndexUri(uri) {
+  if (!uri.startsWith(BASEPATH + "index/")) return null;
+  const tail = uri.slice((BASEPATH + "index/").length);
+  const m = tail.match(/^([0-9]{14})-(.+)$/);
+  if (!m) return null;
+  return { ts: m[1], slug: m[2] };
+}
+
+function parseEntryUri(uri) {
+  // {basepath}task/{ts}/{slug}/entries/{ts2}-{kind}
+  const prefix = BASEPATH + "task/";
+  if (!uri.startsWith(prefix)) return null;
+  const tail = uri.slice(prefix.length);
+  const parts = tail.split("/");
+  if (parts.length !== 5 || parts[3] !== "entries") return null;
+  const m = parts[4].match(/^([0-9]{14})-(.+)$/);
+  if (!m) return null;
+  return { ts: parts[0], slug: parts[1], entryTs: m[1], kind: m[2] };
+}
+
+function statusFromKind(kind) {
+  if (!kind.startsWith("status-")) return null;
+  return kind.slice("status-".length);
+}
+
+function taskRootUri(addr) {
+  return `${BASEPATH}task/${addr.ts}/${addr.slug}`;
+}
+
+function indexUri(addr) {
+  return `${BASEPATH}index/${addr.ts}-${addr.slug}`;
+}
+
+// ─── status discovery ─────────────────────────────────────────────
+
+async function discoverBasepath() {
+  try {
+    const res = await fetch(`${BASE}/config`);
+    if (res.ok) {
+      const cfg = await res.json();
+      if (typeof cfg.basepath === "string" && cfg.basepath.includes("://")) {
+        BASEPATH = cfg.basepath.endsWith("/") ? cfg.basepath : cfg.basepath + "/";
+      }
+    }
+    if ($basepathLabel) {
+      $basepathLabel.textContent = BASEPATH;
+    }
+  } catch (err) {
+    showError("config fetch failed: " + err.message);
+  }
+}
+
+// ─── list ─────────────────────────────────────────────────────────
 
 async function loadList() {
   $detail.classList.add("hidden");
   $list.classList.remove("hidden");
-  const status = $filterStatus.value;
-  const q = status ? `?status=${encodeURIComponent(status)}` : "";
-  const locator = `task://t/list${q}`;
+
   try {
-    const out = await client.read([locator]);
-    const tasks = (out[0]?.[1] ?? []);
-    if (!tasks.length) {
-      $list.innerHTML = `<div class="text-stone-500 text-center py-12">no tasks ${status ? "with status " + status : "yet"}</div>`;
+    const indexLoc = `${BASEPATH}index/?fn=ls&format=full`;
+    const out = await client.read([indexLoc]);
+    const rows = out[0]?.[1] ?? [];
+
+    // Each row: [uri, title]
+    const tasks = [];
+    for (const [uri, title] of rows) {
+      const addr = parseIndexUri(uri);
+      if (!addr) continue;
+      tasks.push({ addr, title: title ?? "" });
+    }
+
+    // Fetch derived status for each.
+    const statuses = await Promise.all(tasks.map((t) => deriveStatus(t.addr)));
+    for (let i = 0; i < tasks.length; i++) {
+      tasks[i].status = statuses[i].status;
+      tasks[i].updatedAt = statuses[i].updatedAt;
+    }
+
+    // Filter by status if requested.
+    const filter = $filterStatus.value;
+    const filtered = filter ? tasks.filter((t) => t.status === filter) : tasks;
+
+    // Sort newest-updated first.
+    filtered.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+
+    if (!filtered.length) {
+      $list.innerHTML = `<div class="text-stone-500 text-center py-12">no tasks ${filter ? "with status " + filter : "yet"}</div>`;
       return;
     }
-    $list.innerHTML = tasks.map(taskCard).join("");
-    for (const el of $list.querySelectorAll("[data-id]")) {
-      el.addEventListener("click", () => loadDetail(el.dataset.id));
+    $list.innerHTML = filtered.map(taskCard).join("");
+    for (const el of $list.querySelectorAll("[data-addr]")) {
+      el.addEventListener("click", () => {
+        const [ts, ...slugParts] = el.dataset.addr.split("-");
+        loadDetail({ ts, slug: slugParts.join("-") });
+      });
     }
   } catch (err) {
     showError("list failed: " + err.message);
   }
 }
 
-async function loadDetail(id) {
+async function deriveStatus(addr) {
   try {
-    const metaOut = await client.read([`task://t/${id}`]);
-    const meta = metaOut[0]?.[1];
-    if (!meta) {
-      showError(`task not found: ${id}`);
-      return;
-    }
-    const subReads = [];
-    if (meta.contentRef) subReads.push(meta.contentRef);
-    subReads.push(...(meta.updateUris ?? []));
-    subReads.push(...(meta.resourceUris ?? []));
-    const subOut = subReads.length ? await client.read(subReads) : [];
-
-    let content = "";
-    const updates = [];
-    const resources = [];
-    let i = 0;
-    if (meta.contentRef) {
-      content = decodeHashContent(subOut[i++]?.[1]);
-    }
-    for (const _u of meta.updateUris ?? []) {
-      const u = subOut[i++]?.[1];
-      if (u) updates.push(u);
-    }
-    for (const _r of meta.resourceUris ?? []) {
-      const r = subOut[i++]?.[1];
-      if (r) resources.push(r);
-    }
-
-    // Fetch update bodies for any with contentRef.
-    const bodyRefs = updates.filter((u) => u.contentRef).map((u) => u.contentRef);
-    let bodyMap = new Map();
-    if (bodyRefs.length) {
-      const bodyOut = await client.read(bodyRefs);
-      for (let k = 0; k < bodyRefs.length; k++) {
-        bodyMap.set(bodyRefs[k], decodeHashContent(bodyOut[k]?.[1]));
+    const loc = `${taskRootUri(addr)}/entries/?fn=ls&format=uris`;
+    const out = await client.read([loc]);
+    const uris = out[0]?.[1] ?? [];
+    let latestTs;
+    let latestStatusTs;
+    let status = "active";
+    for (const u of uris) {
+      const parsed = parseEntryUri(u);
+      if (!parsed) continue;
+      if (!latestTs || parsed.entryTs > latestTs) latestTs = parsed.entryTs;
+      const st = statusFromKind(parsed.kind);
+      if (st && (!latestStatusTs || parsed.entryTs > latestStatusTs)) {
+        latestStatusTs = parsed.entryTs;
+        status = st;
       }
     }
+    const updatedAt = latestTs ? parseTs(latestTs) : parseTs(addr.ts);
+    return { status, updatedAt };
+  } catch {
+    return { status: "active", updatedAt: parseTs(addr.ts) };
+  }
+}
 
-    renderDetail(meta, content, updates, resources, bodyMap);
+function taskCard(t) {
+  return `
+    <div class="bg-white border border-stone-200 rounded-lg p-4 hover:border-stone-300 cursor-pointer" data-addr="${t.addr.ts}-${t.addr.slug}">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2">
+            ${pill(t.status)}
+            <h3 class="font-medium truncate">${escapeHtml(t.title)}</h3>
+          </div>
+          <div class="mono text-xs text-stone-400 mt-1 truncate">${t.addr.ts}-${escapeHtml(t.addr.slug)}</div>
+        </div>
+        <div class="text-xs text-stone-500 whitespace-nowrap">
+          ${relTime(t.updatedAt)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ─── detail ───────────────────────────────────────────────────────
+
+async function loadDetail(addr) {
+  try {
+    const viewLoc = `${taskRootUri(addr)}?fn=view`;
+    const out = await client.read([viewLoc]);
+    const view = out[0]?.[1];
+    if (!view || !view.title) {
+      showError(`task not found: ${addr.ts}-${addr.slug}`);
+      return;
+    }
+    renderDetail(view);
   } catch (err) {
     showError("view failed: " + err.message);
   }
 }
 
-function renderDetail(meta, content, updates, resources, bodyMap) {
+function renderDetail(view) {
   $list.classList.add("hidden");
   $detail.classList.remove("hidden");
 
-  const ctx = meta.context ?? {};
-  const ctxRows = [];
-  if (ctx.worktree) ctxRows.push(["worktree", `<span class="mono">${escapeHtml(ctx.worktree)}</span>`]);
-  if (ctx.repo) ctxRows.push(["repo", escapeHtml(ctx.repo)]);
-  if (ctx.branch) ctxRows.push(["branch", `<span class="mono">${escapeHtml(ctx.branch)}</span>`]);
-  if (ctx.pr) ctxRows.push(["pr", `<a class="text-blue-600 hover:underline" target="_blank" href="${escapeHtml(ctx.pr)}">${escapeHtml(ctx.pr)}</a>`]);
-  if (ctx.agent) ctxRows.push(["agent", escapeHtml(ctx.agent)]);
+  const ctxRows = Object.entries(view.context ?? {}).map(([k, v]) =>
+    `<div class="text-stone-500">${escapeHtml(k)}</div><div class="mono">${escapeHtml(v)}</div>`
+  ).join("");
 
-  const updatesHtml = updates.sort((a, b) => a.seq - b.seq).map((u) => {
-    const body = u.contentRef ? bodyMap.get(u.contentRef) : "";
+  const tagsHtml = (view.tags ?? []).map((t) =>
+    `<span class="text-xs bg-stone-100 text-stone-700 px-2 py-0.5 rounded">${escapeHtml(t)}</span>`
+  ).join(" ");
+
+  const entriesHtml = (view.entries ?? []).map((e) => {
+    const status = statusFromKind(e.kind);
+    const kindBadge = status
+      ? `<span class="pill pill-${status} mr-1">${e.kind}</span>`
+      : `<span class="text-stone-400 mono">${e.kind}</span>`;
     return `
       <div class="border-l-2 border-stone-300 pl-3 py-1">
         <div class="text-xs text-stone-500">
-          <span class="mono">[${String(u.seq).padStart(3, "0")}]</span>
-          ${new Date(u.ts).toISOString()} · ${escapeHtml(u.kind)}
+          <span class="mono">${e.ts.slice(0,8)} ${e.ts.slice(8,14)}</span> ${kindBadge}
         </div>
-        <div class="text-sm mt-0.5">${escapeHtml(u.message ?? "")}</div>
-        ${body ? `<div class="text-sm text-stone-700 mt-1 whitespace-pre-wrap">${escapeHtml(body)}</div>` : ""}
+        ${e.body ? `<div class="text-sm mt-0.5 whitespace-pre-wrap">${escapeHtml(e.body)}</div>` : ""}
       </div>
     `;
   }).join("");
 
-  const resourcesHtml = resources.map((r) => `
-    <div class="text-sm">
-      <span class="mono text-stone-500">${escapeHtml(r.name)}</span>
-      <span class="text-stone-400 text-xs">(${escapeHtml(r.kind)})</span>
-      ${r.url ? `<a target="_blank" class="text-blue-600 hover:underline ml-2" href="${escapeHtml(r.url)}">${escapeHtml(r.url)}</a>` : ""}
-    </div>
-  `).join("");
+  const resourcesHtml = (view.resources ?? []).map((r) => {
+    const isUrl = /^https?:\/\//.test(r.body);
+    const body = isUrl
+      ? `<a target="_blank" class="text-blue-600 hover:underline" href="${escapeHtml(r.body)}">${escapeHtml(r.body)}</a>`
+      : `<span class="mono">${escapeHtml(r.body)}</span>`;
+    return `<div class="text-sm"><span class="mono text-stone-500">${escapeHtml(r.name)}</span> → ${body}</div>`;
+  }).join("");
 
   $detail.innerHTML = `
     <div class="flex items-start justify-between mb-4">
       <button id="back" class="text-sm text-stone-600 hover:text-stone-900">&larr; back</button>
       <div class="flex gap-2">
-        <button id="btn-update" class="px-3 py-1 text-sm rounded bg-stone-900 text-white hover:bg-stone-700">append update</button>
+        <button id="btn-entry" class="px-3 py-1 text-sm rounded bg-stone-900 text-white hover:bg-stone-700">append entry</button>
       </div>
     </div>
     <div class="bg-white border border-stone-200 rounded-lg p-6">
       <div class="flex items-center gap-2 mb-2">
-        ${pill(meta.status)}
-        <h2 class="text-xl font-semibold">${escapeHtml(meta.title)}</h2>
+        ${pill(view.status)}
+        <h2 class="text-xl font-semibold">${escapeHtml(view.title)}</h2>
       </div>
-      <div class="text-xs text-stone-500 mono">${escapeHtml(meta.id)} · updated ${relTime(meta.updatedAt)}</div>
+      <div class="text-xs text-stone-500 mono">${escapeHtml(view.addr.ts)}-${escapeHtml(view.addr.slug)}</div>
 
-      ${ctxRows.length ? `
-        <div class="mt-4 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-sm">
-          ${ctxRows.map(([k, v]) => `<div class="text-stone-500">${k}</div><div>${v}</div>`).join("")}
-        </div>
+      ${ctxRows ? `
+        <div class="mt-4 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-sm">${ctxRows}</div>
       ` : ""}
 
-      ${(meta.tags ?? []).length ? `
-        <div class="mt-3 flex gap-1 flex-wrap">
-          ${(meta.tags ?? []).map((t) => `<span class="text-xs bg-stone-100 text-stone-700 px-2 py-0.5 rounded">${escapeHtml(t)}</span>`).join("")}
-        </div>
-      ` : ""}
+      ${tagsHtml ? `<div class="mt-3 flex gap-1 flex-wrap">${tagsHtml}</div>` : ""}
 
-      ${content ? `
+      ${view.description ? `
         <div class="mt-4">
           <div class="text-xs uppercase tracking-wide text-stone-500 mb-1">description</div>
-          <div class="text-sm whitespace-pre-wrap">${escapeHtml(content)}</div>
+          <div class="text-sm whitespace-pre-wrap">${escapeHtml(view.description)}</div>
         </div>
       ` : ""}
 
-      ${updates.length ? `
+      ${entriesHtml ? `
         <div class="mt-6">
-          <div class="text-xs uppercase tracking-wide text-stone-500 mb-2">updates</div>
-          <div class="space-y-2">${updatesHtml}</div>
+          <div class="text-xs uppercase tracking-wide text-stone-500 mb-2">entries</div>
+          <div class="space-y-2">${entriesHtml}</div>
         </div>
       ` : ""}
 
-      ${resources.length ? `
+      ${resourcesHtml ? `
         <div class="mt-6">
           <div class="text-xs uppercase tracking-wide text-stone-500 mb-2">resources</div>
           <div class="space-y-1">${resourcesHtml}</div>
@@ -222,18 +308,17 @@ function renderDetail(meta, content, updates, resources, bodyMap) {
   `;
 
   document.getElementById("back").addEventListener("click", loadList);
-  document.getElementById("btn-update").addEventListener("click", () => openUpdate(meta));
+  document.getElementById("btn-entry").addEventListener("click", () => openEntry(view));
 }
 
-// ---------- new task ----------
+// ─── new task ─────────────────────────────────────────────────────
 
-function openNew() {
-  document.getElementById("new-modal").classList.remove("hidden");
-}
+function openNew() { document.getElementById("new-modal").classList.remove("hidden"); }
 function closeNew() {
   document.getElementById("new-modal").classList.add("hidden");
   document.getElementById("new-form").reset();
 }
+
 async function submitNew(ev) {
   ev.preventDefault();
   const f = new FormData(ev.target);
@@ -242,33 +327,26 @@ async function submitNew(ev) {
   const description = String(f.get("description") ?? "");
   const tagsRaw = String(f.get("tags") ?? "");
   const tags = tagsRaw.split(",").map((s) => s.trim()).filter(Boolean);
-  const ctx = {
+  const context = {
+    worktree: String(f.get("worktree") ?? "") || undefined,
     repo: String(f.get("repo") ?? "") || undefined,
     branch: String(f.get("branch") ?? "") || undefined,
     pr: String(f.get("pr") ?? "") || undefined,
     agent: String(f.get("agent") ?? "") || undefined,
   };
-  const hasCtx = Object.values(ctx).some(Boolean);
 
   try {
-    const id = newTaskId();
-    const messages = [];
-    let contentRef;
-    if (description.trim()) {
-      const hex = await sha256HexUtf8(description);
-      contentRef = `hash://sha256/${hex}`;
-      messages.push([contentRef, description]);
+    const addr = { ts: nowTs(), slug: slugify(title) };
+    const root = taskRootUri(addr);
+    const messages = [[`${root}/title`, title]];
+    if (description) messages.push([`${root}/description`, description]);
+    for (const [k, v] of Object.entries(context)) {
+      if (v) messages.push([`${root}/context/${k}`, v]);
     }
-    const now = Date.now();
-    const meta = {
-      id, title, status: "active",
-      createdAt: now, updatedAt: now,
-      contentRef,
-      tags: tags.length ? tags : undefined,
-      context: hasCtx ? ctx : undefined,
-      updateCount: 0, updateUris: [], resourceUris: [],
-    };
-    messages.push([`task://t/${id}`, meta]);
+    for (const tag of tags) {
+      messages.push([`${root}/tags/${tag}`, ""]);
+    }
+    messages.push([indexUri(addr), title]);
 
     const results = await client.receive(messages);
     const bad = results.find((r) => !r.accepted);
@@ -281,75 +359,61 @@ async function submitNew(ev) {
   }
 }
 
-// ---------- append update ----------
+// ─── append entry ─────────────────────────────────────────────────
 
-function openUpdate(meta) {
-  const form = document.getElementById("update-form");
-  form.querySelector('input[name="taskId"]').value = meta.id;
-  document.getElementById("update-modal").classList.remove("hidden");
+function openEntry(view) {
+  const form = document.getElementById("entry-form");
+  form.dataset.ts = view.addr.ts;
+  form.dataset.slug = view.addr.slug;
+  document.getElementById("entry-modal").classList.remove("hidden");
 }
-function closeUpdate() {
-  document.getElementById("update-modal").classList.add("hidden");
-  document.getElementById("update-form").reset();
+function closeEntry() {
+  document.getElementById("entry-modal").classList.add("hidden");
+  document.getElementById("entry-form").reset();
 }
 
-async function submitUpdate(ev) {
+async function submitEntry(ev) {
   ev.preventDefault();
-  const f = new FormData(ev.target);
-  const id = String(f.get("taskId") ?? "");
-  const message = String(f.get("message") ?? "").trim();
-  if (!id || !message) return;
+  const form = ev.target;
+  const addr = { ts: form.dataset.ts, slug: form.dataset.slug };
+  const f = new FormData(form);
   const kind = String(f.get("kind") ?? "note");
-  const body = String(f.get("body") ?? "");
-  const newStatus = String(f.get("new_status") ?? "") || undefined;
+  const body = String(f.get("body") ?? "").trim();
+  const newStatus = String(f.get("new_status") ?? "");
 
   try {
-    const metaOut = await client.read([`task://t/${id}`]);
-    const meta = metaOut[0]?.[1];
-    if (!meta) throw new Error(`task ${id} not found`);
-
-    const seq = meta.updateCount;
-    const updateUri = `task://t/${id}/u/${String(seq).padStart(6, "0")}`;
-    const ts = Date.now();
-
+    const root = taskRootUri(addr);
+    const ts = nowTs();
     const messages = [];
-    let contentRef;
-    if (body.trim()) {
-      const hex = await sha256HexUtf8(body);
-      contentRef = `hash://sha256/${hex}`;
-      messages.push([contentRef, body]);
+    if (body) {
+      messages.push([`${root}/entries/${ts}-${kind}`, body]);
+    } else if (!newStatus) {
+      throw new Error("either a body or a new status is required");
     }
-    const update = { taskId: id, seq, ts, kind, message, contentRef };
-    messages.push([updateUri, update]);
-
-    const nextMeta = {
-      ...meta,
-      status: newStatus ?? meta.status,
-      updatedAt: ts,
-      updateCount: seq + 1,
-      updateUris: [...meta.updateUris, updateUri],
-    };
-    messages.push([`task://t/${id}`, nextMeta]);
-
+    if (newStatus) {
+      const statusBody = body && kind === "status" ? body : "";
+      messages.push([`${root}/entries/${ts}-status-${newStatus}`, statusBody]);
+    }
     const results = await client.receive(messages);
     const bad = results.find((r) => !r.accepted);
     if (bad) throw new Error(bad.error ?? "receive rejected");
 
-    closeUpdate();
-    await loadDetail(id);
+    closeEntry();
+    await loadDetail(addr);
   } catch (err) {
-    showError("update failed: " + err.message);
+    showError("append failed: " + err.message);
   }
 }
 
-// ---------- wire up ----------
+// ─── wire up ──────────────────────────────────────────────────────
 
 document.getElementById("btn-refresh").addEventListener("click", loadList);
 document.getElementById("btn-new").addEventListener("click", openNew);
 document.getElementById("new-cancel").addEventListener("click", closeNew);
-document.getElementById("update-cancel").addEventListener("click", closeUpdate);
+document.getElementById("entry-cancel").addEventListener("click", closeEntry);
 document.getElementById("new-form").addEventListener("submit", submitNew);
-document.getElementById("update-form").addEventListener("submit", submitUpdate);
+document.getElementById("entry-form").addEventListener("submit", submitEntry);
 $filterStatus.addEventListener("change", loadList);
 
-loadList();
+await discoverBasepath();
+await loadList();

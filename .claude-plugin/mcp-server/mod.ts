@@ -5,16 +5,19 @@
  * Exposes the taskwatch rig via the standard b3nd MCP tools
  * (`b3nd_receive`, `b3nd_read`, `b3nd_status`). The MCP surface stays
  * uniform with every other b3nd transport — agents talk to the rig
- * via the protocol shape, not through bespoke taskwatch verbs.
+ * via the protocol shape (taught by the bundled skill), not through
+ * bespoke taskwatch verbs.
  *
- * Storage:
- *   TASKWATCH_DATA      — local FS root (default: ~/.taskwatch/data)
- *   TASKWATCH_BACKEND   — HTTP URL of a remote b3nd rig. When set,
- *                         the local rig delegates to that remote node
- *                         instead of writing to disk, so a shared rig
- *                         can be fronted by this MCP process.
+ * The basepath is operator-chosen and surfaced via b3nd_status so
+ * agents can discover the mount point:
  *
- * Status chatter goes to stderr; stdout is reserved for MCP JSON-RPC.
+ *   TASKWATCH_BASEPATH  rig mount (default: taskwatch://)
+ *   TASKWATCH_DATA      local FS root (default: ~/.taskwatch/data)
+ *   TASKWATCH_BACKEND   when set to an HTTP URL, the local rig
+ *                       delegates to the remote node instead of
+ *                       writing to disk — shared scope.
+ *
+ * Logs go to stderr; stdout is reserved for the MCP JSON-RPC stream.
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -23,29 +26,38 @@ import { connection, Rig } from "@bandeira-tech/b3nd-core/rig";
 import type { ProtocolInterfaceNode } from "@bandeira-tech/b3nd-core/types";
 import { HttpClient } from "@bandeira-tech/b3nd-move/http/client";
 
-import { createRig, defaultDataDir } from "../../src/rig.ts";
+import { createRig, defaultBasepath, defaultDataDir } from "../../src/rig.ts";
+import { normalizeBasepath } from "../../src/protocol.ts";
 
-const VERSION = "0.0.1";
+const VERSION = "0.1.0";
 
-async function buildRig(): Promise<Rig> {
+interface BuildResult {
+  rig: Rig;
+  basepath: string;
+}
+
+async function buildRig(): Promise<BuildResult> {
+  const basepath = normalizeBasepath(defaultBasepath());
   const remote = Deno.env.get("TASKWATCH_BACKEND");
   if (remote && remote.startsWith("http")) {
     const client = new HttpClient({ url: remote }) as unknown as ProtocolInterfaceNode;
-    const conn = connection(client, ["task://**", "hash://**"]);
-    return new Rig({
+    const conn = connection(client, [`${basepath}**`]);
+    const rig = new Rig({
       routes: { receive: [conn], read: [conn], observe: [conn] },
     });
+    return { rig, basepath };
   }
-  return await createRig();
+  const built = await createRig({ basepath });
+  return { rig: built.rig, basepath: built.basepath };
 }
 
 async function main() {
+  const { rig, basepath } = await buildRig();
   console.error(
-    `taskwatch-mcp ${VERSION} — backend: ${
+    `taskwatch-mcp ${VERSION} — basepath ${basepath} — backend: ${
       Deno.env.get("TASKWATCH_BACKEND") ?? defaultDataDir()
     }`,
   );
-  const rig = await buildRig();
   const server = buildMcpServer(rig, { name: "taskwatch", version: VERSION });
   const transport = new StdioServerTransport();
   await server.connect(transport);

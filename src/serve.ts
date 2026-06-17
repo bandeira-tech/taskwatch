@@ -3,18 +3,13 @@
  * taskwatch serve — host the rig over HTTP and serve the web UI from
  * the same port.
  *
- *   /api/v1/*    → standard b3nd HTTP service (the protocol surface;
- *                  any b3nd client can drive it).
- *   /            → web UI (single static page; talks back to
- *                  /api/v1/* via the b3nd HTTP wire — pure consumer).
+ *   /api/v1/*    → standard b3nd HTTP service (the protocol surface)
+ *   /            → web UI (vanilla page; pure b3nd consumer)
  *
- * The UI is one consumer of the protocol. The protocol surface stays
- * uniform; other UIs (or none) can be plugged in by pointing them at
- * the same /api/v1/* path.
- *
- *   PORT             — default 7474
- *   TASKWATCH_DATA   — FS root for the local rig (default ~/.taskwatch/data)
- *   TASKWATCH_CORS   — Access-Control-Allow-Origin header (default '*')
+ *   PORT                default 7474
+ *   TASKWATCH_BASEPATH  rig mount (default: taskwatch://)
+ *   TASKWATCH_DATA      FS root  (default: ~/.taskwatch/data)
+ *   TASKWATCH_CORS      Access-Control-Allow-Origin (default '*')
  */
 
 import { httpApi } from "@bandeira-tech/b3nd-move/http/service";
@@ -23,7 +18,7 @@ import { extname, fromFileUrl, join } from "@std/path";
 
 import { createRig, defaultDataDir } from "./rig.ts";
 
-const VERSION = "0.0.1";
+const VERSION = "0.1.0";
 const HERE = fromFileUrl(new URL("../web", import.meta.url));
 
 function corsHeaders(): HeadersInit {
@@ -46,10 +41,7 @@ async function serveStatic(req: Request): Promise<Response> {
   const url = new URL(req.url);
   let path = url.pathname;
   if (path === "/" || path === "") path = "/index.html";
-  // Strip any leading "/static/" so the UI can be flexible about prefixes.
   if (path.startsWith("/static/")) path = path.slice("/static".length);
-
-  // Block path traversal.
   if (path.includes("..")) return new Response("forbidden", { status: 403 });
 
   const file = join(HERE, path);
@@ -68,13 +60,22 @@ async function serveStatic(req: Request): Promise<Response> {
 
 async function main() {
   const port = Number(Deno.env.get("PORT") ?? "7474");
-  const rig = await createRig();
+  const { rig, basepath } = await createRig();
   const api = httpApi(rig);
 
   const handler = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
+    }
+    // /config exposes the basepath for the UI (rig.status drops details).
+    if (url.pathname === "/config" || url.pathname === "/config.json") {
+      return withCors(
+        new Response(
+          JSON.stringify({ basepath, version: VERSION, protocol: "taskwatch" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
     }
     if (url.pathname.startsWith("/api/")) {
       const res = await api(req);
@@ -85,9 +86,10 @@ async function main() {
   };
 
   console.error(`taskwatch-serve ${VERSION} on :${port}`);
-  console.error(`  data:  ${defaultDataDir()}`);
-  console.error(`  ui:    http://localhost:${port}/`);
-  console.error(`  b3nd:  http://localhost:${port}/api/v1/`);
+  console.error(`  basepath: ${basepath}`);
+  console.error(`  data:     ${defaultDataDir()}`);
+  console.error(`  ui:       http://localhost:${port}/`);
+  console.error(`  b3nd:     http://localhost:${port}/api/v1/`);
 
   Deno.serve({ port }, handler);
 }
