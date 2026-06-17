@@ -1,0 +1,50 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - heading "taskwatch" [level=1] [ref=e5]
+        - generic [ref=e6]: taskwatch://
+      - generic [ref=e7]:
+        - combobox [ref=e8]:
+          - option "all statuses" [selected]
+          - option "active"
+          - option "paused"
+          - option "blocked"
+          - option "rotting"
+          - option "done"
+          - option "abandoned"
+          - option "superseded"
+        - button "refresh" [ref=e9] [cursor=pointer]
+        - button "+ new" [ref=e10] [cursor=pointer]
+  - main [ref=e11]:
+    - generic [ref=e37]:
+      - generic [ref=e38]:
+        - button "← back" [ref=e39] [cursor=pointer]
+        - button "append entry" [ref=e41] [cursor=pointer]
+      - generic [ref=e42]:
+        - generic [ref=e43]:
+          - generic [ref=e44]: paused
+          - heading "test the v0.1.0 UI" [level=2] [ref=e45]
+        - generic [ref=e46]: 20260617133548-test-the-v0-1-0-ui
+        - generic [ref=e47]:
+          - generic [ref=e48]: agent
+          - generic [ref=e49]: claude
+          - generic [ref=e50]: branch
+          - generic [ref=e51]: v0.1.0
+        - generic [ref=e52]:
+          - generic [ref=e53]: dogfood
+          - generic [ref=e54]: ui
+        - generic [ref=e55]:
+          - generic [ref=e56]: description
+          - generic [ref=e57]: verify the paper trail rendering in the browser works end-to-end
+        - generic [ref=e58]:
+          - generic [ref=e59]: entries
+          - generic [ref=e60]:
+            - generic [ref=e61]:
+              - generic [ref=e62]: 20260617 133548 progress
+              - generic [ref=e63]: the ui rewrite is now mid-flight
+            - generic [ref=e64]:
+              - generic [ref=e65]:
+                - text: 20260617 133548
+                - generic [ref=e66]: status-paused
+              - generic [ref=e67]: testing pause render

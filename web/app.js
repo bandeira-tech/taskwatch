@@ -79,10 +79,9 @@ function parseEntryUri(uri) {
   // {basepath}task/{ts}/{slug}/entries/{ts2}-{kind}
   const prefix = BASEPATH + "task/";
   if (!uri.startsWith(prefix)) return null;
-  const tail = uri.slice(prefix.length);
-  const parts = tail.split("/");
-  if (parts.length !== 5 || parts[3] !== "entries") return null;
-  const m = parts[4].match(/^([0-9]{14})-(.+)$/);
+  const parts = uri.slice(prefix.length).split("/");
+  if (parts.length !== 4 || parts[2] !== "entries") return null;
+  const m = parts[3].match(/^([0-9]{14})-(.+)$/);
   if (!m) return null;
   return { ts: parts[0], slug: parts[1], entryTs: m[1], kind: m[2] };
 }

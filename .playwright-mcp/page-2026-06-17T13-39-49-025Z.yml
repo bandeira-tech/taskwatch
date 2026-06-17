@@ -1,0 +1,26 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - heading "taskwatch" [level=1] [ref=e5]
+        - generic [ref=e6]: taskwatch://
+      - generic [ref=e7]:
+        - combobox [ref=e8]:
+          - option "all statuses" [selected]
+          - option "active"
+          - option "paused"
+          - option "blocked"
+          - option "rotting"
+          - option "done"
+          - option "abandoned"
+          - option "superseded"
+        - button "refresh" [ref=e9] [cursor=pointer]
+        - button "+ new" [ref=e10] [cursor=pointer]
+  - main [ref=e11]:
+    - generic [ref=e14] [cursor=pointer]:
+      - generic [ref=e15]:
+        - generic [ref=e16]:
+          - generic [ref=e17]: active
+          - heading "second task for list view" [level=3] [ref=e18]
+        - generic [ref=e19]: 20260617133548-second-task-for-list-view
+      - generic [ref=e20]: 4m ago
