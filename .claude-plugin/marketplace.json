@@ -1,0 +1,16 @@
+{
+  "name": "taskwatch",
+  "description": "Track what you and your agents are working on — a b3nd protocol where every task and every status update is a URI.",
+  "version": "0.0.1",
+  "owner": {
+    "name": "Bandeira Tech",
+    "url": "https://github.com/bandeira-tech"
+  },
+  "plugins": [
+    {
+      "name": "taskwatch",
+      "source": "./",
+      "description": "Taskwatch — track in-flight work via a b3nd protocol. MCP stays a pure PIN; the bundled skill teaches agents how to drive it."
+    }
+  ]
+}
