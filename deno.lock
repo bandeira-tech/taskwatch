@@ -6,6 +6,7 @@
     "jsr:@bandeira-tech/b3nd-save@~0.8.1": "0.8.1",
     "jsr:@std/fs@1": "1.0.24",
     "jsr:@std/internal@^1.0.14": "1.0.14",
+    "jsr:@std/media-types@1": "1.1.0",
     "jsr:@std/path@1": "1.1.5",
     "jsr:@std/path@^1.1.5": "1.1.5",
     "npm:@modelcontextprotocol/sdk@1": "1.29.0_zod@4.4.3_hono@4.12.25_ajv@8.20.0_express@5.2.1",
@@ -41,6 +42,9 @@
     },
     "@std/internal@1.0.14": {
       "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
+    },
+    "@std/media-types@1.1.0": {
+      "integrity": "c9d093f0c05c3512932b330e3cc1fe1d627b301db33a4c2c2185c02471d6eaa4"
     },
     "@std/path@1.1.5": {
       "integrity": "ccea00982ea28c36becaf6e62f855406c76a8c32d462f66f415bbb7d83a271bc",
@@ -575,6 +579,7 @@
       "jsr:@bandeira-tech/b3nd-move@~0.17.1",
       "jsr:@bandeira-tech/b3nd-save@~0.8.1",
       "jsr:@std/fs@1",
+      "jsr:@std/media-types@1",
       "jsr:@std/path@1",
       "npm:@modelcontextprotocol/sdk@^1.0.4"
     ]

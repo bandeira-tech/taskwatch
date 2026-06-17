@@ -31,7 +31,8 @@
     "@bandeira-tech/b3nd-canon/hash": "jsr:@bandeira-tech/b3nd-canon@^0.13.0/hash",
     "@modelcontextprotocol/sdk": "npm:@modelcontextprotocol/sdk@^1.0.4",
     "@std/fs": "jsr:@std/fs@^1.0.0",
-    "@std/path": "jsr:@std/path@^1.0.0"
+    "@std/path": "jsr:@std/path@^1.0.0",
+    "@std/media-types": "jsr:@std/media-types@^1"
   },
   "compilerOptions": {
     "lib": ["deno.window", "deno.unstable"]
