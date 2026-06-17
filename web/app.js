@@ -1,21 +1,52 @@
 import { B3ndHttpClient } from "/static/b3nd-http.js";
+import { marked } from "https://esm.sh/marked@13.0.3";
+
+marked.setOptions({ gfm: true, breaks: true });
 
 const BASE = location.origin;
 const client = new B3ndHttpClient(BASE);
 
-// Discovered at boot via b3nd_status.
+// Discovered at boot via /config.
 let BASEPATH = "taskwatch://";
 
-const $list = document.getElementById("list");
-const $detail = document.getElementById("detail");
-const $error = document.getElementById("error");
-const $filterStatus = document.getElementById("filter-status");
-const $basepathLabel = document.getElementById("basepath-label");
+const STATUSES = ["active", "paused", "blocked", "rotting", "done", "abandoned", "superseded"];
+
+const $ = (id) => document.getElementById(id);
+const $list = $("list");
+const $content = $("content");
+const $tagsList = $("tags-list");
+const $counts = $("counts");
+const $basepathLabel = $("basepath-label");
+const $versionLabel = $("version-label");
+const $toast = $("toast");
+const $clearFilters = $("clear-filters");
+
+let TASKS = [];     // [{ addr, title, status, updatedAt, tags }]
+let FILTERS = readHashFilters();
+let OPEN_VIEW = null;
+
+// ─── utilities ───────────────────────────────────────────────────
 
 function showError(msg) {
-  $error.textContent = msg;
-  $error.classList.remove("hidden");
-  setTimeout(() => $error.classList.add("hidden"), 4000);
+  $toast.textContent = msg;
+  $toast.classList.remove("hidden");
+  clearTimeout(showError._t);
+  showError._t = setTimeout(() => $toast.classList.add("hidden"), 4000);
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function renderMarkdown(body) {
+  if (!body) return "";
+  try {
+    return marked.parse(String(body), { async: false });
+  } catch {
+    return `<p>${escapeHtml(body)}</p>`;
+  }
 }
 
 function relTime(ms) {
@@ -30,14 +61,11 @@ function relTime(ms) {
   return `${days}d ago`;
 }
 
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
-
-function pill(status) {
-  return `<span class="pill pill-${status}">${status}</span>`;
+function fmtTsLocal(ts) {
+  // YYYYMMDDhhmmss UTC → "YYYY-MM-DD HH:mm"
+  const d = new Date(parseTs(ts));
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 function slugify(title) {
@@ -76,7 +104,6 @@ function parseIndexUri(uri) {
 }
 
 function parseEntryUri(uri) {
-  // {basepath}task/{ts}/{slug}/entries/{ts2}-{kind}
   const prefix = BASEPATH + "task/";
   if (!uri.startsWith(prefix)) return null;
   const parts = uri.slice(prefix.length).split("/");
@@ -84,6 +111,14 @@ function parseEntryUri(uri) {
   const m = parts[3].match(/^([0-9]{14})-(.+)$/);
   if (!m) return null;
   return { ts: parts[0], slug: parts[1], entryTs: m[1], kind: m[2] };
+}
+
+function parseTagUri(uri) {
+  const prefix = BASEPATH + "task/";
+  if (!uri.startsWith(prefix)) return null;
+  const parts = uri.slice(prefix.length).split("/");
+  if (parts.length !== 4 || parts[2] !== "tags") return null;
+  return parts[3];
 }
 
 function statusFromKind(kind) {
@@ -99,9 +134,28 @@ function indexUri(addr) {
   return `${BASEPATH}index/${addr.ts}-${addr.slug}`;
 }
 
-// ─── status discovery ─────────────────────────────────────────────
+function readHashFilters() {
+  const sp = new URLSearchParams(location.hash.replace(/^#/, ""));
+  return {
+    status: sp.get("status") ?? "active",
+    tag: sp.get("tag") ?? "",
+    open: sp.get("open") ?? "", // "{ts}-{slug}"
+  };
+}
 
-async function discoverBasepath() {
+function writeHashFilters() {
+  const sp = new URLSearchParams();
+  if (FILTERS.status) sp.set("status", FILTERS.status);
+  if (FILTERS.tag) sp.set("tag", FILTERS.tag);
+  if (FILTERS.open) sp.set("open", FILTERS.open);
+  const next = sp.toString();
+  const url = next ? `#${next}` : location.pathname;
+  history.replaceState(null, "", url);
+}
+
+// ─── config / boot ───────────────────────────────────────────────
+
+async function discoverConfig() {
   try {
     const res = await fetch(`${BASE}/config`);
     if (res.ok) {
@@ -109,111 +163,192 @@ async function discoverBasepath() {
       if (typeof cfg.basepath === "string" && cfg.basepath.includes("://")) {
         BASEPATH = cfg.basepath.endsWith("/") ? cfg.basepath : cfg.basepath + "/";
       }
-    }
-    if ($basepathLabel) {
-      $basepathLabel.textContent = BASEPATH;
+      if (cfg.version) $versionLabel.textContent = `v${cfg.version}`;
     }
   } catch (err) {
     showError("config fetch failed: " + err.message);
   }
+  $basepathLabel.textContent = BASEPATH;
 }
 
-// ─── list ─────────────────────────────────────────────────────────
+// ─── list load ───────────────────────────────────────────────────
 
 async function loadList() {
-  $detail.classList.add("hidden");
-  $list.classList.remove("hidden");
-
   try {
     const indexLoc = `${BASEPATH}index/?fn=ls&format=full`;
     const out = await client.read([indexLoc]);
     const rows = out[0]?.[1] ?? [];
-
-    // Each row: [uri, title]
-    const tasks = [];
+    const addrs = [];
     for (const [uri, title] of rows) {
       const addr = parseIndexUri(uri);
       if (!addr) continue;
-      tasks.push({ addr, title: title ?? "" });
+      addrs.push({ addr, title: title ?? "" });
     }
 
-    // Fetch derived status for each.
-    const statuses = await Promise.all(tasks.map((t) => deriveStatus(t.addr)));
-    for (let i = 0; i < tasks.length; i++) {
-      tasks[i].status = statuses[i].status;
-      tasks[i].updatedAt = statuses[i].updatedAt;
-    }
+    // Fetch entries + tags in parallel per task.
+    const enriched = await Promise.all(addrs.map(async (t) => {
+      const [entries, tags] = await Promise.all([
+        readUris(`${taskRootUri(t.addr)}/entries/?fn=ls&format=uris`),
+        readUris(`${taskRootUri(t.addr)}/tags/?fn=ls&format=uris`),
+      ]);
+      let latestTs;
+      let latestStatusTs;
+      let status = "active";
+      for (const u of entries) {
+        const p = parseEntryUri(u);
+        if (!p) continue;
+        if (!latestTs || p.entryTs > latestTs) latestTs = p.entryTs;
+        const s = statusFromKind(p.kind);
+        if (s && (!latestStatusTs || p.entryTs > latestStatusTs)) {
+          latestStatusTs = p.entryTs;
+          status = s;
+        }
+      }
+      const tagNames = tags.map(parseTagUri).filter(Boolean);
+      return {
+        ...t,
+        status,
+        tags: tagNames,
+        updatedAt: latestTs ? parseTs(latestTs) : parseTs(t.addr.ts),
+      };
+    }));
 
-    // Filter by status if requested.
-    const filter = $filterStatus.value;
-    const filtered = filter ? tasks.filter((t) => t.status === filter) : tasks;
-
-    // Sort newest-updated first.
-    filtered.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-
-    if (!filtered.length) {
-      $list.innerHTML = `<div class="text-stone-500 text-center py-12">no tasks ${filter ? "with status " + filter : "yet"}</div>`;
-      return;
-    }
-    $list.innerHTML = filtered.map(taskCard).join("");
-    for (const el of $list.querySelectorAll("[data-addr]")) {
-      el.addEventListener("click", () => {
-        const [ts, ...slugParts] = el.dataset.addr.split("-");
-        loadDetail({ ts, slug: slugParts.join("-") });
-      });
-    }
+    TASKS = enriched;
+    renderAll();
   } catch (err) {
     showError("list failed: " + err.message);
   }
 }
 
-async function deriveStatus(addr) {
+async function readUris(loc) {
   try {
-    const loc = `${taskRootUri(addr)}/entries/?fn=ls&format=uris`;
     const out = await client.read([loc]);
-    const uris = out[0]?.[1] ?? [];
-    let latestTs;
-    let latestStatusTs;
-    let status = "active";
-    for (const u of uris) {
-      const parsed = parseEntryUri(u);
-      if (!parsed) continue;
-      if (!latestTs || parsed.entryTs > latestTs) latestTs = parsed.entryTs;
-      const st = statusFromKind(parsed.kind);
-      if (st && (!latestStatusTs || parsed.entryTs > latestStatusTs)) {
-        latestStatusTs = parsed.entryTs;
-        status = st;
-      }
-    }
-    const updatedAt = latestTs ? parseTs(latestTs) : parseTs(addr.ts);
-    return { status, updatedAt };
+    return out[0]?.[1] ?? [];
   } catch {
-    return { status: "active", updatedAt: parseTs(addr.ts) };
+    return [];
   }
 }
 
-function taskCard(t) {
-  return `
-    <div class="bg-white border border-stone-200 rounded-lg p-4 hover:border-stone-300 cursor-pointer" data-addr="${t.addr.ts}-${t.addr.slug}">
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            ${pill(t.status)}
-            <h3 class="font-medium truncate">${escapeHtml(t.title)}</h3>
-          </div>
-          <div class="mono text-xs text-stone-400 mt-1 truncate">${t.addr.ts}-${escapeHtml(t.addr.slug)}</div>
-        </div>
-        <div class="text-xs text-stone-500 whitespace-nowrap">
-          ${relTime(t.updatedAt)}
-        </div>
-      </div>
-    </div>
-  `;
+// ─── render ──────────────────────────────────────────────────────
+
+function filteredTasks() {
+  return TASKS.filter((t) => {
+    if (FILTERS.status && t.status !== FILTERS.status) return false;
+    if (FILTERS.tag && !t.tags.includes(FILTERS.tag)) return false;
+    return true;
+  }).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
 
-// ─── detail ───────────────────────────────────────────────────────
+function renderAll() {
+  renderTabs();
+  renderTagSidebar();
+  renderList();
+  renderClearBtn();
+  renderDetail();
+  renderCounts();
+}
 
-async function loadDetail(addr) {
+function renderCounts() {
+  const total = TASKS.length;
+  const shown = filteredTasks().length;
+  if (total === shown) {
+    $counts.textContent = `${total} task${total === 1 ? "" : "s"}`;
+  } else {
+    $counts.textContent = `${shown} of ${total}`;
+  }
+}
+
+function renderTabs() {
+  for (const tab of document.querySelectorAll(".tab")) {
+    const s = tab.dataset.status;
+    tab.classList.toggle("is-active", s === FILTERS.status);
+  }
+}
+
+function renderTagSidebar() {
+  const counts = new Map();
+  for (const t of TASKS) {
+    if (FILTERS.status && t.status !== FILTERS.status) continue;
+    for (const tag of t.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+  }
+  const tags = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
+  const items = [
+    `<li><button type="button" class="filter-item ${FILTERS.tag === "" ? "is-active" : ""}" data-tag="">all tags</button></li>`,
+    ...tags.map(([tag, n]) =>
+      `<li><button type="button" class="filter-item ${FILTERS.tag === tag ? "is-active" : ""}" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)} <span style="color:var(--muted);float:right;">${n}</span></button></li>`
+    ),
+  ];
+  if (tags.length === 0 && FILTERS.tag === "") {
+    items.length = 0;
+    items.push(`<li style="padding:0.32rem 0.55rem;color:var(--muted);font-size:0.78rem;">no tags</li>`);
+  }
+  $tagsList.innerHTML = items.join("");
+  for (const btn of $tagsList.querySelectorAll("[data-tag]")) {
+    btn.addEventListener("click", () => {
+      FILTERS.tag = btn.dataset.tag;
+      writeHashFilters();
+      renderAll();
+    });
+  }
+}
+
+function renderClearBtn() {
+  $clearFilters.classList.toggle("hidden", !FILTERS.tag);
+}
+
+function renderList() {
+  const tasks = filteredTasks();
+  if (!tasks.length) {
+    const msg = FILTERS.status
+      ? `no ${FILTERS.status} tasks${FILTERS.tag ? ` tagged ${FILTERS.tag}` : ""}`
+      : "no tasks yet";
+    $list.innerHTML = `<li class="empty">${escapeHtml(msg)}</li>`;
+    return;
+  }
+  const openKey = FILTERS.open;
+  $list.innerHTML = tasks.map((t) => {
+    const key = `${t.addr.ts}-${t.addr.slug}`;
+    const isOpen = key === openKey;
+    return `
+      <li>
+        <button type="button"
+                class="row s-${t.status} ${isOpen ? "is-open" : ""}"
+                role="option"
+                aria-selected="${isOpen}"
+                data-key="${key}">
+          <span class="row-main">
+            <span class="row-title">${escapeHtml(t.title || "(untitled)")}</span>
+            <span class="row-sub">
+              <span class="s-${t.status}">${t.status}</span>
+              ${t.tags.slice(0, 3).map((tag) => `<span>#${escapeHtml(tag)}</span>`).join(" ")}
+            </span>
+          </span>
+          <span class="row-meta">
+            <span class="ts">${relTime(t.updatedAt)}</span>
+          </span>
+        </button>
+      </li>
+    `;
+  }).join("");
+
+  for (const btn of $list.querySelectorAll("[data-key]")) {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.key;
+      const dash = key.indexOf("-");
+      const ts = key.slice(0, dash);
+      const slug = key.slice(dash + 1);
+      openTask({ ts, slug });
+    });
+  }
+}
+
+// ─── detail ──────────────────────────────────────────────────────
+
+async function openTask(addr) {
+  FILTERS.open = `${addr.ts}-${addr.slug}`;
+  writeHashFilters();
+  renderList();
   try {
     const viewLoc = `${taskRootUri(addr)}?fn=view`;
     const out = await client.read([viewLoc]);
@@ -222,100 +357,130 @@ async function loadDetail(addr) {
       showError(`task not found: ${addr.ts}-${addr.slug}`);
       return;
     }
-    renderDetail(view);
+    OPEN_VIEW = view;
+    renderDetail();
   } catch (err) {
     showError("view failed: " + err.message);
   }
 }
 
-function renderDetail(view) {
-  $list.classList.add("hidden");
-  $detail.classList.remove("hidden");
-
-  const ctxRows = Object.entries(view.context ?? {}).map(([k, v]) =>
-    `<div class="text-stone-500">${escapeHtml(k)}</div><div class="mono">${escapeHtml(v)}</div>`
-  ).join("");
-
-  const tagsHtml = (view.tags ?? []).map((t) =>
-    `<span class="text-xs bg-stone-100 text-stone-700 px-2 py-0.5 rounded">${escapeHtml(t)}</span>`
-  ).join(" ");
-
-  const entriesHtml = (view.entries ?? []).map((e) => {
-    const status = statusFromKind(e.kind);
-    const kindBadge = status
-      ? `<span class="pill pill-${status} mr-1">${e.kind}</span>`
-      : `<span class="text-stone-400 mono">${e.kind}</span>`;
-    return `
-      <div class="border-l-2 border-stone-300 pl-3 py-1">
-        <div class="text-xs text-stone-500">
-          <span class="mono">${e.ts.slice(0,8)} ${e.ts.slice(8,14)}</span> ${kindBadge}
+function renderDetail() {
+  if (!OPEN_VIEW) {
+    $content.innerHTML = `<div class="placeholder"><p>Select a task from the list to open it here.</p></div>`;
+    return;
+  }
+  const v = OPEN_VIEW;
+  const ctxEntries = Object.entries(v.context ?? {});
+  const ctxHtml = ctxEntries.length
+    ? `
+      <div class="detail-section">
+        <div class="detail-section-label">context</div>
+        <div class="context-grid">
+          ${ctxEntries.map(([k, val]) => `
+            <span class="k">${escapeHtml(k)}</span>
+            <span class="v">${escapeHtml(val)}</span>
+          `).join("")}
         </div>
-        ${e.body ? `<div class="text-sm mt-0.5 whitespace-pre-wrap">${escapeHtml(e.body)}</div>` : ""}
-      </div>
-    `;
-  }).join("");
+      </div>`
+    : "";
 
-  const resourcesHtml = (view.resources ?? []).map((r) => {
-    const isUrl = /^https?:\/\//.test(r.body);
-    const body = isUrl
-      ? `<a target="_blank" class="text-blue-600 hover:underline" href="${escapeHtml(r.body)}">${escapeHtml(r.body)}</a>`
-      : `<span class="mono">${escapeHtml(r.body)}</span>`;
-    return `<div class="text-sm"><span class="mono text-stone-500">${escapeHtml(r.name)}</span> → ${body}</div>`;
-  }).join("");
-
-  $detail.innerHTML = `
-    <div class="flex items-start justify-between mb-4">
-      <button id="back" class="text-sm text-stone-600 hover:text-stone-900">&larr; back</button>
-      <div class="flex gap-2">
-        <button id="btn-entry" class="px-3 py-1 text-sm rounded bg-stone-900 text-white hover:bg-stone-700">append entry</button>
-      </div>
-    </div>
-    <div class="bg-white border border-stone-200 rounded-lg p-6">
-      <div class="flex items-center gap-2 mb-2">
-        ${pill(view.status)}
-        <h2 class="text-xl font-semibold">${escapeHtml(view.title)}</h2>
-      </div>
-      <div class="text-xs text-stone-500 mono">${escapeHtml(view.addr.ts)}-${escapeHtml(view.addr.slug)}</div>
-
-      ${ctxRows ? `
-        <div class="mt-4 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-sm">${ctxRows}</div>
-      ` : ""}
-
-      ${tagsHtml ? `<div class="mt-3 flex gap-1 flex-wrap">${tagsHtml}</div>` : ""}
-
-      ${view.description ? `
-        <div class="mt-4">
-          <div class="text-xs uppercase tracking-wide text-stone-500 mb-1">description</div>
-          <div class="text-sm whitespace-pre-wrap">${escapeHtml(view.description)}</div>
+  const tagsHtml = (v.tags ?? []).length
+    ? `
+      <div class="detail-section">
+        <div class="detail-section-label">tags</div>
+        <div class="tags-row">
+          ${v.tags.map((t) => `<span class="tag-chip">#${escapeHtml(t)}</span>`).join("")}
         </div>
-      ` : ""}
+      </div>`
+    : "";
 
-      ${entriesHtml ? `
-        <div class="mt-6">
-          <div class="text-xs uppercase tracking-wide text-stone-500 mb-2">entries</div>
-          <div class="space-y-2">${entriesHtml}</div>
-        </div>
-      ` : ""}
+  const descHtml = v.description
+    ? `
+      <div class="detail-section">
+        <div class="detail-section-label">description</div>
+        <div class="markdown">${renderMarkdown(v.description)}</div>
+      </div>`
+    : "";
 
-      ${resourcesHtml ? `
-        <div class="mt-6">
-          <div class="text-xs uppercase tracking-wide text-stone-500 mb-2">resources</div>
-          <div class="space-y-1">${resourcesHtml}</div>
+  const sortedEntries = [...(v.entries ?? [])].sort((a, b) => b.ts.localeCompare(a.ts));
+  const entriesHtml = sortedEntries.length
+    ? `
+      <div class="detail-section">
+        <div class="detail-section-label">entries (${sortedEntries.length})</div>
+        <div class="entries-list">
+          ${sortedEntries.map((e) => {
+            const status = statusFromKind(e.kind);
+            const kindClass = status ? `kind-status s-${status}` : `kind-${escapeHtml(e.kind.split("-")[0])}`;
+            return `
+              <div class="entry ${kindClass}">
+                <div class="entry-head">
+                  <span class="ts">${fmtTsLocal(e.ts)}</span>
+                  <span class="entry-kind">${escapeHtml(e.kind)}</span>
+                </div>
+                ${e.body ? `<div class="markdown compact">${renderMarkdown(e.body)}</div>` : ""}
+              </div>`;
+          }).join("")}
         </div>
-      ` : ""}
-    </div>
+      </div>`
+    : "";
+
+  const resourcesHtml = (v.resources ?? []).length
+    ? `
+      <div class="detail-section">
+        <div class="detail-section-label">resources</div>
+        ${v.resources.map((r) => {
+          const isUrl = /^https?:\/\//.test(r.body);
+          const body = isUrl
+            ? `<a target="_blank" rel="noopener" href="${escapeHtml(r.body)}">${escapeHtml(r.body)}</a>`
+            : escapeHtml(r.body);
+          return `<div class="resource-row"><span class="name">${escapeHtml(r.name)}</span><span class="body">${body}</span></div>`;
+        }).join("")}
+      </div>`
+    : "";
+
+  $content.innerHTML = `
+    <article class="detail">
+      <header class="detail-head">
+        <div class="detail-meta">
+          <span class="detail-status s-${v.status}">${v.status}</span>
+          <span class="ts" style="color:var(--muted);font-family:var(--mono);font-size:0.78rem;">
+            updated ${relTime(new Date(v.updatedAt).getTime())}
+          </span>
+          <span style="margin-left:auto;display:flex;gap:0.4rem;">
+            <button class="btn" id="btn-back" type="button">← list</button>
+            <button class="btn primary" id="btn-entry" type="button">+ entry</button>
+          </span>
+        </div>
+        <h2>${escapeHtml(v.title)}</h2>
+        <div class="detail-uri">${escapeHtml(v.uri)}</div>
+      </header>
+
+      ${descHtml}
+      ${ctxHtml}
+      ${tagsHtml}
+      ${entriesHtml}
+      ${resourcesHtml}
+    </article>
   `;
 
-  document.getElementById("back").addEventListener("click", loadList);
-  document.getElementById("btn-entry").addEventListener("click", () => openEntry(view));
+  $("btn-back").addEventListener("click", closeTask);
+  $("btn-entry").addEventListener("click", () => openEntryModal(v));
 }
 
-// ─── new task ─────────────────────────────────────────────────────
+function closeTask() {
+  OPEN_VIEW = null;
+  FILTERS.open = "";
+  writeHashFilters();
+  renderList();
+  renderDetail();
+}
 
-function openNew() { document.getElementById("new-modal").classList.remove("hidden"); }
+// ─── new task modal ──────────────────────────────────────────────
+
+function openNew() { $("new-modal").classList.remove("hidden"); }
 function closeNew() {
-  document.getElementById("new-modal").classList.add("hidden");
-  document.getElementById("new-form").reset();
+  $("new-modal").classList.add("hidden");
+  $("new-form").reset();
 }
 
 async function submitNew(ev) {
@@ -353,22 +518,24 @@ async function submitNew(ev) {
 
     closeNew();
     await loadList();
+    await openTask(addr);
   } catch (err) {
     showError("create failed: " + err.message);
   }
 }
 
-// ─── append entry ─────────────────────────────────────────────────
+// ─── append entry modal ──────────────────────────────────────────
 
-function openEntry(view) {
-  const form = document.getElementById("entry-form");
+function openEntryModal(view) {
+  const form = $("entry-form");
   form.dataset.ts = view.addr.ts;
   form.dataset.slug = view.addr.slug;
-  document.getElementById("entry-modal").classList.remove("hidden");
+  $("entry-modal").classList.remove("hidden");
 }
-function closeEntry() {
-  document.getElementById("entry-modal").classList.add("hidden");
-  document.getElementById("entry-form").reset();
+
+function closeEntryModal() {
+  $("entry-modal").classList.add("hidden");
+  $("entry-form").reset();
 }
 
 async function submitEntry(ev) {
@@ -390,29 +557,65 @@ async function submitEntry(ev) {
       throw new Error("either a body or a new status is required");
     }
     if (newStatus) {
-      const statusBody = body && kind === "status" ? body : "";
-      messages.push([`${root}/entries/${ts}-status-${newStatus}`, statusBody]);
+      messages.push([`${root}/entries/${ts}-status-${newStatus}`, body && !messages.length ? body : ""]);
     }
     const results = await client.receive(messages);
     const bad = results.find((r) => !r.accepted);
     if (bad) throw new Error(bad.error ?? "receive rejected");
 
-    closeEntry();
-    await loadDetail(addr);
+    closeEntryModal();
+    await loadList();
+    await openTask(addr);
   } catch (err) {
     showError("append failed: " + err.message);
   }
 }
 
-// ─── wire up ──────────────────────────────────────────────────────
+// ─── wire up ─────────────────────────────────────────────────────
 
-document.getElementById("btn-refresh").addEventListener("click", loadList);
-document.getElementById("btn-new").addEventListener("click", openNew);
-document.getElementById("new-cancel").addEventListener("click", closeNew);
-document.getElementById("entry-cancel").addEventListener("click", closeEntry);
-document.getElementById("new-form").addEventListener("submit", submitNew);
-document.getElementById("entry-form").addEventListener("submit", submitEntry);
-$filterStatus.addEventListener("change", loadList);
+for (const tab of document.querySelectorAll(".tab")) {
+  tab.addEventListener("click", () => {
+    FILTERS.status = tab.dataset.status;
+    writeHashFilters();
+    renderAll();
+  });
+}
 
-await discoverBasepath();
+$clearFilters.addEventListener("click", () => {
+  FILTERS.tag = "";
+  writeHashFilters();
+  renderAll();
+});
+
+$("btn-refresh").addEventListener("click", () => loadList());
+$("btn-new").addEventListener("click", openNew);
+$("new-cancel").addEventListener("click", closeNew);
+$("entry-cancel").addEventListener("click", closeEntryModal);
+$("new-form").addEventListener("submit", submitNew);
+$("entry-form").addEventListener("submit", submitEntry);
+
+// Close modal on backdrop click.
+for (const id of ["new-modal", "entry-modal"]) {
+  $(id).addEventListener("click", (ev) => {
+    if (ev.target.id === id) {
+      id === "new-modal" ? closeNew() : closeEntryModal();
+    }
+  });
+}
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") {
+    $("new-modal").classList.add("hidden");
+    $("entry-modal").classList.add("hidden");
+  }
+});
+
+await discoverConfig();
 await loadList();
+
+if (FILTERS.open) {
+  const dash = FILTERS.open.indexOf("-");
+  const ts = FILTERS.open.slice(0, dash);
+  const slug = FILTERS.open.slice(dash + 1);
+  if (ts && slug) await openTask({ ts, slug });
+}
