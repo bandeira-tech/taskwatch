@@ -4,12 +4,16 @@ description: List currently tracked tasks. Optionally filter by status or tag.
 
 ## Your task
 
-List the tracked taskwatch tasks via the `taskwatch` MCP server.
+List the tracked taskwatch tasks.
 
-1. Read `task://t/list` via `b3nd_read`. If the user provided `$ARGUMENTS` of the form `status=<s>`, `tag=<t>`, or `parent=<uri>`, append them as a query string (e.g. `task://t/list?status=active`). Otherwise default to **active** tasks only.
+1. Read `{basepath}index/?fn=ls&format=full` via `b3nd_read`. Each row is `[index-uri, title]`.
 
-2. Print a concise table — one line per task: `<id>  <status>  <title>  (updated <relative-time>)`. Group rotting/blocked tasks at the top with a small header so the user sees them first.
+2. For each task, derive its current status by reading `{basepath}task/{ts}/{slug}/entries/?fn=ls&format=uris` and picking the latest URI matching `*-status-*` (default `active` if none). See the **taskwatch** skill for the fold rules.
 
-3. If there are zero tasks, say so plainly. Don't invent any.
+3. If `$ARGUMENTS` carries `status=<s>` or `tag=<t>`, filter client-side.
+
+4. Print a concise table — one line per task: `<ts>-<slug>  <status>  <title>  (updated <relative-time>)`. Group rotting / blocked / paused tasks at the top so the user sees what may have rotted first.
+
+5. If there are zero tasks, say so plainly.
 
 Arguments: $ARGUMENTS

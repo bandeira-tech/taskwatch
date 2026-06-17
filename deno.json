@@ -1,6 +1,6 @@
 {
   "name": "@bandeira-tech/taskwatch",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "A b3nd protocol for tracking work-in-flight — agents and humans append task state to a shared rig so nothing rots silently.",
   "exports": {
     ".": "./mod.ts",

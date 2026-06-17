@@ -1,6 +1,6 @@
 {
   "name": "taskwatch",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Track what you and your agents are working on — a b3nd protocol where every task and every status update is a URI. The MCP server is a pure b3nd PIN; the skill teaches the protocol shape.",
   "author": {
     "name": "Bandeira Tech",
@@ -19,6 +19,7 @@
         "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/mcp-server/mod.ts"
       ],
       "env": {
+        "TASKWATCH_BASEPATH": "${TASKWATCH_BASEPATH:-}",
         "TASKWATCH_DATA": "${TASKWATCH_DATA:-}",
         "TASKWATCH_BACKEND": "${TASKWATCH_BACKEND:-}"
       }
