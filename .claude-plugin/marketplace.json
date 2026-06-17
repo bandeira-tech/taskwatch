@@ -1,7 +1,7 @@
 {
   "name": "taskwatch",
   "description": "Track what you and your agents are working on — a b3nd protocol where every task and every status update is a URI.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "owner": {
     "name": "Bandeira Tech",
     "url": "https://github.com/bandeira-tech"
