@@ -1,0 +1,41 @@
+{
+  "name": "@bandeira-tech/taskwatch",
+  "version": "0.0.1",
+  "description": "A b3nd protocol for tracking work-in-flight — agents and humans append task state to a shared rig so nothing rots silently.",
+  "exports": {
+    ".": "./mod.ts",
+    "./protocol": "./src/protocol.ts",
+    "./rig": "./src/rig.ts",
+    "./cli": "./src/cli.ts",
+    "./serve": "./src/serve.ts"
+  },
+  "tasks": {
+    "cli": "deno run -A src/cli.ts",
+    "serve": "deno run -A src/serve.ts",
+    "mcp": "deno run -A .claude-plugin/mcp-server/mod.ts",
+    "check": "deno check mod.ts src/protocol.ts src/rig.ts src/cli.ts src/serve.ts .claude-plugin/mcp-server/mod.ts",
+    "test": "deno test -A"
+  },
+  "imports": {
+    "@bandeira-tech/b3nd-core": "jsr:@bandeira-tech/b3nd-core@^0.22.0",
+    "@bandeira-tech/b3nd-move": "jsr:@bandeira-tech/b3nd-move@^0.17.1",
+    "@bandeira-tech/b3nd-save": "jsr:@bandeira-tech/b3nd-save@^0.8.1",
+    "@bandeira-tech/b3nd-save/fs": "jsr:@bandeira-tech/b3nd-save@^0.8.1/fs",
+    "@bandeira-tech/b3nd-save/memory": "jsr:@bandeira-tech/b3nd-save@^0.8.1/memory",
+    "@bandeira-tech/b3nd-save/clients": "jsr:@bandeira-tech/b3nd-save@^0.8.1/clients",
+    "@bandeira-tech/b3nd-save/entity": "jsr:@bandeira-tech/b3nd-save@^0.8.1/entity",
+    "@bandeira-tech/b3nd-canon": "jsr:@bandeira-tech/b3nd-canon@^0.13.0",
+    "@bandeira-tech/b3nd-canon/hash": "jsr:@bandeira-tech/b3nd-canon@^0.13.0/hash",
+    "@modelcontextprotocol/sdk": "npm:@modelcontextprotocol/sdk@^1.0.4",
+    "@std/fs": "jsr:@std/fs@^1.0.0",
+    "@std/path": "jsr:@std/path@^1.0.0"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "deno.unstable"]
+  },
+  "fmt": {
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "singleQuote": false
+  }
+}
