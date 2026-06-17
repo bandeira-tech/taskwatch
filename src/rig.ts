@@ -1,11 +1,14 @@
 /**
  * Taskwatch rig factory.
  *
- * Composes a TaskwatchNode (bytes-backed store with `task://list?...`
- * synthesis) into a Rig wired across `receive`, `read`, `observe` for
- * `task://**` and `hash://**`.
+ * Mounts the TaskwatchNode under an operator-chosen basepath so the
+ * same code can host the protocol at any prefix:
  *
- * Storage is injected. The default entrypoint (CLI, serve, MCP) wires
+ *   - Default:           taskwatch://
+ *   - Multi-tenant:      app://work/  · app://side-projects/
+ *   - Composed:          b3nd://node/personal/
+ *
+ * Storage is injected. The default entrypoints (CLI, serve, MCP) wire
  * `FsStore` rooted at `$TASKWATCH_DATA` (or `~/.taskwatch/data`).
  */
 
@@ -17,12 +20,19 @@ import { join } from "@std/path";
 
 import { createDenoFsExecutor } from "./storage/fs-executor.ts";
 import { TaskwatchNode } from "./storage/taskwatch-node.ts";
+import { DEFAULT_BASEPATH, normalizeBasepath } from "./protocol.ts";
 
 export interface CreateRigOptions {
+  /** Operator-chosen mount point. Default `taskwatch://`. */
+  basepath?: string;
   /** Concrete store backing the node. Defaults to FsStore at `defaultDataDir()`. */
   store?: EntityStore;
   /** Skip store provisioning. Default: provision before returning. */
   skipProvision?: boolean;
+}
+
+export function defaultBasepath(): string {
+  return Deno.env.get("TASKWATCH_BASEPATH") ?? DEFAULT_BASEPATH;
 }
 
 export function defaultDataDir(): string {
@@ -34,7 +44,21 @@ export function defaultDataDir(): string {
   return join(home, ".taskwatch", "data");
 }
 
-export async function createRig(opts: CreateRigOptions = {}): Promise<Rig> {
+export interface CreateRigResult {
+  rig: Rig;
+  node: TaskwatchNode;
+  basepath: string;
+}
+
+/**
+ * Build the taskwatch rig.
+ *
+ * Returns the rig, the node it wraps, and the normalized basepath so
+ * callers (CLI / MCP / serve / tests) can share the same value with
+ * the service layer.
+ */
+export async function createRig(opts: CreateRigOptions = {}): Promise<CreateRigResult> {
+  const basepath = normalizeBasepath(opts.basepath ?? defaultBasepath());
   const store = opts.store ?? new FsStore(defaultDataDir(), createDenoFsExecutor());
 
   if (!opts.skipProvision) {
@@ -45,17 +69,18 @@ export async function createRig(opts: CreateRigOptions = {}): Promise<Rig> {
     }
   }
 
-  const node = new TaskwatchNode(store);
-  const conn = connection(node, ["task://**", "hash://**"]);
+  const node = new TaskwatchNode({ basepath, store });
+  const conn = connection(node, [`${basepath}**`]);
 
-  return new Rig({
+  const rig = new Rig({
     routes: {
       receive: [conn],
       read: [conn],
       observe: [conn],
     },
   });
+
+  return { rig, node, basepath };
 }
 
-/** The bnd CLI rig-loader convention: default export is a factory. */
 export default createRig;

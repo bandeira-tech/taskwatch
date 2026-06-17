@@ -1,54 +1,68 @@
 #!/usr/bin/env -S deno run -A
 /**
- * taskwatch CLI — local in-process rig over FsStore by default.
+ * taskwatch CLI — in-process rig with FS storage.
  *
- *   taskwatch new "title" [--description -|<text>] [--tag <t>]... [--parent <id>]
- *                         [--worktree <p>] [--repo <r>] [--branch <b>] [--pr <url>]
- *                         [--agent <a>] [--id <id>]
- *   taskwatch list [--status <s>] [--tag <t>] [--parent <id>] [--json]
- *   taskwatch view <id> [--json]
- *   taskwatch update <id> --message <msg> [--kind <k>] [--status <s>] [--body -|<text>]
- *   taskwatch status <id> <to> [--note <msg>]
- *   taskwatch resource <id> <name> --kind <k> [--url <u>] [--body -|<text>]
- *   taskwatch rot <id> [--note <msg>]
+ *   taskwatch new "<title>" [--description -|<text>] [--tag <t>]... [--parent <uri>]
+ *                           [--worktree <p>] [--repo <r>] [--branch <b>] [--pr <url>]
+ *                           [--agent <a>]
+ *   taskwatch list [--json]
+ *   taskwatch view <addr> [--json]
+ *   taskwatch status <addr> <to> [--note <msg>]
+ *   taskwatch progress <addr> <message...>
+ *   taskwatch note <addr> <message...>
+ *   taskwatch resource <addr> <name> [--url <url> | --body -|<text>]
+ *   taskwatch tag <addr> <tag> [--remove]
+ *   taskwatch ctx <addr> <field> <value>
+ *   taskwatch rot <addr> [--note <msg>]
+ *   taskwatch rename <addr> "<new title>"
+ *   taskwatch delete <addr> [--hard]
+ *
+ * <addr> is `<ts>-<slug>` or, if unambiguous, just `<slug>`.
  */
 
-import type { Rig } from "@bandeira-tech/b3nd-core/rig";
+import type { ProtocolInterfaceNode } from "@bandeira-tech/b3nd-core/types";
 
 import { createRig } from "./rig.ts";
 import {
   addResource,
-  appendUpdate,
+  appendEntry,
+  appendStatus,
   createTask,
-  getContent,
   getTask,
-  listResources,
-  listTasks,
-  listUpdates,
-  setStatus,
+  hardDelete,
+  listTasksWithStatus,
+  resolveAddress,
+  setContext,
+  setDescription as _setDescription,
+  setTag,
+  setTitle,
 } from "./service.ts";
 import {
   TASK_STATUSES,
-  type TaskMeta,
+  type TaskAddress,
   type TaskStatus,
-  type UpdateKind,
 } from "./protocol.ts";
 
 function usage(): never {
   console.error(
     `usage:
-  taskwatch new "<title>" [--description -|<text>] [--tag <t>]... [--parent <id>]
-                          [--worktree <p>] [--repo <r>] [--branch <b>] [--pr <url>]
-                          [--agent <a>] [--id <id>]
-  taskwatch list [--status <s>] [--tag <t>] [--parent <id>] [--json]
-  taskwatch view <id> [--json]
-  taskwatch update <id> --message <msg> [--kind <k>] [--status <s>] [--body -|<text>]
-  taskwatch status <id> <to> [--note <msg>]
-  taskwatch resource <id> <name> --kind <k> [--url <u>] [--body -|<text>]
-  taskwatch rot <id> [--note <msg>]
+  taskwatch new "<title>" [--description -|<text>] [--tag <t>]... [--parent <uri>]
+                          [--worktree <p>] [--repo <r>] [--branch <b>] [--pr <url>] [--agent <a>]
+  taskwatch list [--json]
+  taskwatch view <addr> [--json]
+  taskwatch status <addr> <to> [--note <msg>]
+  taskwatch progress <addr> <message...>
+  taskwatch note <addr> <message...>
+  taskwatch resource <addr> <name> [--url <url> | --body -|<text>]
+  taskwatch tag <addr> <tag> [--remove]
+  taskwatch ctx <addr> <field> <value>
+  taskwatch rot <addr> [--note <msg>]
+  taskwatch rename <addr> "<new title>"
+  taskwatch delete <addr> [--hard]
 
 env:
-  TASKWATCH_DATA  storage root (default: $HOME/.taskwatch/data)`,
+  TASKWATCH_DATA      storage root (default: $HOME/.taskwatch/data)
+  TASKWATCH_BASEPATH  rig mount point (default: taskwatch://)`,
   );
   Deno.exit(2);
 }
@@ -88,62 +102,51 @@ async function bodyArg(args: string[], name: string): Promise<string | undefined
   return v === "-" ? await readStdin() : v;
 }
 
-function formatStatus(s: TaskStatus): string {
-  return s;
-}
-
-function formatTask(m: TaskMeta): string {
-  const lines = [
-    `${m.id}  ${formatStatus(m.status).padEnd(10)}  ${m.title}`,
-  ];
-  if (m.tags?.length) lines.push(`  tags: ${m.tags.join(", ")}`);
-  if (m.context?.worktree) lines.push(`  worktree: ${m.context.worktree}`);
-  if (m.context?.branch || m.context?.repo) {
-    lines.push(`  repo: ${m.context.repo ?? "-"}  branch: ${m.context.branch ?? "-"}`);
+async function mustResolve(
+  node: ProtocolInterfaceNode,
+  basepath: string,
+  raw: string,
+): Promise<TaskAddress> {
+  const addr = await resolveAddress(node, basepath, raw);
+  if (!addr) {
+    console.error(`could not resolve task: ${raw}`);
+    Deno.exit(1);
   }
-  if (m.context?.pr) lines.push(`  pr: ${m.context.pr}`);
-  if (m.parent) lines.push(`  parent: ${m.parent}`);
-  lines.push(
-    `  updates: ${m.updateCount}  resources: ${m.resourceUris.length}  updated: ${
-      new Date(m.updatedAt).toISOString()
-    }`,
-  );
-  return lines.join("\n");
+  return addr;
 }
 
-async function cmdNew(rig: Rig, args: string[]) {
+function formatAddr(addr: TaskAddress): string {
+  return `${addr.ts}-${addr.slug}`;
+}
+
+// ─── commands ──────────────────────────────────────────────────────
+
+async function cmdNew(node: ProtocolInterfaceNode, basepath: string, args: string[]) {
   const title = args[0];
   if (!title) usage();
   const rest = args.slice(1);
   const description = await bodyArg(rest, "description");
   const tags = multi(rest, "tag");
   const parent = arg(rest, "parent");
-  const worktree = arg(rest, "worktree");
-  const repo = arg(rest, "repo");
-  const branch = arg(rest, "branch");
-  const pr = arg(rest, "pr");
-  const agent = arg(rest, "agent");
-  const id = arg(rest, "id");
-
-  const result = await createTask(rig, {
+  const context: Record<string, string> = {};
+  for (const k of ["worktree", "repo", "branch", "pr", "agent"]) {
+    const v = arg(rest, k);
+    if (v) context[k] = v;
+  }
+  const result = await createTask(node, basepath, {
     title,
     description,
     tags: tags.length > 0 ? tags : undefined,
     parent,
-    context: worktree || repo || branch || pr || agent
-      ? { worktree, repo, branch, pr, agent }
-      : undefined,
-    id,
+    context: Object.keys(context).length > 0 ? context : undefined,
   });
   console.log(result.uri);
+  console.log(`addr: ${formatAddr(result.addr)}`);
 }
 
-async function cmdList(rig: Rig, args: string[]) {
-  const status = arg(args, "status") as TaskStatus | undefined;
-  const tag = arg(args, "tag");
-  const parent = arg(args, "parent");
+async function cmdList(node: ProtocolInterfaceNode, basepath: string, args: string[]) {
   const asJson = flag(args, "json");
-  const tasks = await listTasks(rig, { status, tag, parent });
+  const tasks = await listTasksWithStatus(node, basepath);
   if (asJson) {
     console.log(JSON.stringify(tasks, null, 2));
     return;
@@ -153,138 +156,196 @@ async function cmdList(rig: Rig, args: string[]) {
     return;
   }
   for (const t of tasks) {
-    console.log(formatTask(t));
-    console.log();
+    const updatedAt = t.updatedAt
+      ? `${t.updatedAt.slice(0, 8)} ${t.updatedAt.slice(8, 14)}`
+      : "";
+    console.log(
+      `${formatAddr(t.addr).padEnd(28)}  ${t.status.padEnd(10)}  ${updatedAt}  ${t.title}`,
+    );
   }
 }
 
-async function cmdView(rig: Rig, args: string[]) {
-  const id = args[0];
-  if (!id) usage();
+async function cmdView(node: ProtocolInterfaceNode, basepath: string, args: string[]) {
+  const ref = args[0];
+  if (!ref) usage();
   const asJson = flag(args, "json");
-  const meta = await getTask(rig, id);
-  if (!meta) {
-    console.error(`task not found: ${id}`);
+  const addr = await mustResolve(node, basepath, ref);
+  const view = await getTask(node, basepath, addr);
+  if (!view) {
+    console.error(`task not found: ${ref}`);
     Deno.exit(1);
   }
-  const updates = await listUpdates(rig, id);
-  const resources = await listResources(rig, id);
-  const content = meta.contentRef ? await getContent(rig, meta.contentRef) : undefined;
-
   if (asJson) {
-    console.log(JSON.stringify({ meta, content, updates, resources }, null, 2));
+    console.log(JSON.stringify(view, null, 2));
     return;
   }
-  console.log(formatTask(meta));
-  if (content) {
-    console.log();
-    console.log("description:");
-    console.log("  " + content.split("\n").join("\n  "));
+  console.log(`${view.uri}`);
+  console.log(`status: ${view.status}    addr: ${formatAddr(view.addr)}`);
+  console.log(`title:  ${view.title}`);
+  if (view.parent) console.log(`parent: ${view.parent}`);
+  if (Object.keys(view.context).length > 0) {
+    console.log("context:");
+    for (const [k, v] of Object.entries(view.context)) {
+      console.log(`  ${k}: ${v}`);
+    }
   }
-  if (updates.length > 0) {
-    console.log();
-    console.log("updates:");
-    for (const u of updates) {
-      const ts = new Date(u.ts).toISOString();
-      const msg = u.message ? ` ${u.message}` : "";
-      console.log(`  [${String(u.seq).padStart(3, "0")}] ${ts} ${u.kind}${msg}`);
-      if (u.contentRef) {
-        const body = await getContent(rig, u.contentRef);
-        if (body) console.log("    " + body.split("\n").join("\n    "));
+  if (view.tags.length > 0) {
+    console.log(`tags: ${view.tags.join(", ")}`);
+  }
+  if (view.description) {
+    console.log("\ndescription:");
+    console.log("  " + view.description.split("\n").join("\n  "));
+  }
+  if (view.entries.length > 0) {
+    console.log("\nentries:");
+    for (const e of view.entries) {
+      console.log(`  ${e.ts} ${e.kind}${e.body ? "  " + e.body.split("\n")[0] : ""}`);
+      if (e.body && e.body.includes("\n")) {
+        const tail = e.body.split("\n").slice(1).join("\n    ");
+        console.log("    " + tail);
       }
     }
   }
-  if (resources.length > 0) {
-    console.log();
-    console.log("resources:");
-    for (const r of resources) {
-      console.log(`  ${r.name}  (${r.kind})${r.url ? "  " + r.url : ""}`);
+  if (view.resources.length > 0) {
+    console.log("\nresources:");
+    for (const r of view.resources) {
+      console.log(`  ${r.name}: ${r.body}`);
     }
   }
 }
 
-async function cmdUpdate(rig: Rig, args: string[]) {
-  const id = args[0];
-  if (!id) usage();
-  const rest = args.slice(1);
-  const message = arg(rest, "message");
-  if (!message) usage();
-  const kind = (arg(rest, "kind") ?? "note") as UpdateKind;
-  const newStatus = arg(rest, "status") as TaskStatus | undefined;
-  if (newStatus && !TASK_STATUSES.includes(newStatus)) {
-    console.error(`invalid status: ${newStatus}`);
-    Deno.exit(2);
-  }
-  const body = await bodyArg(rest, "body");
-  const result = await appendUpdate(rig, {
-    taskId: id,
-    kind,
-    message,
-    body,
-    newStatus,
-  });
-  console.log(result.uri);
-}
-
-async function cmdStatus(rig: Rig, args: string[]) {
-  const id = args[0];
+async function cmdStatus(node: ProtocolInterfaceNode, basepath: string, args: string[]) {
+  const ref = args[0];
   const to = args[1] as TaskStatus | undefined;
-  if (!id || !to) usage();
+  if (!ref || !to) usage();
   if (!TASK_STATUSES.includes(to)) {
     console.error(`invalid status: ${to}`);
     Deno.exit(2);
   }
-  const note = arg(args.slice(2), "note");
-  const result = await setStatus(rig, id, to, note);
-  console.log(result.uri);
+  const note = arg(args.slice(2), "note") ?? "";
+  const addr = await mustResolve(node, basepath, ref);
+  const uri = await appendStatus(node, basepath, addr, to, note);
+  console.log(uri);
 }
 
-async function cmdResource(rig: Rig, args: string[]) {
-  const id = args[0];
+async function cmdEntry(
+  node: ProtocolInterfaceNode,
+  basepath: string,
+  args: string[],
+  kind: string,
+) {
+  const ref = args[0];
+  const message = args.slice(1).join(" ");
+  if (!ref || !message) usage();
+  const addr = await mustResolve(node, basepath, ref);
+  const uri = await appendEntry(node, basepath, addr, kind, message);
+  console.log(uri);
+}
+
+async function cmdResource(node: ProtocolInterfaceNode, basepath: string, args: string[]) {
+  const ref = args[0];
   const name = args[1];
-  if (!id || !name) usage();
+  if (!ref || !name) usage();
   const rest = args.slice(2);
-  const kind = arg(rest, "kind");
-  if (!kind) usage();
   const url = arg(rest, "url");
-  const body = await bodyArg(rest, "body");
-  const result = await addResource(rig, { taskId: id, name, kind, url, body });
-  console.log(result.uri);
+  const body = url ?? await bodyArg(rest, "body") ?? "";
+  const addr = await mustResolve(node, basepath, ref);
+  const uri = await addResource(node, basepath, addr, name, body);
+  console.log(uri);
 }
 
-async function cmdRot(rig: Rig, args: string[]) {
-  const id = args[0];
-  if (!id) usage();
-  const note = arg(args.slice(1), "note");
-  const result = await setStatus(rig, id, "rotting", note);
-  console.log(result.uri);
+async function cmdTag(node: ProtocolInterfaceNode, basepath: string, args: string[]) {
+  const ref = args[0];
+  const tag = args[1];
+  if (!ref || !tag) usage();
+  const remove = flag(args.slice(2), "remove");
+  const addr = await mustResolve(node, basepath, ref);
+  const uri = await setTag(node, basepath, addr, tag, !remove);
+  console.log(uri);
+}
+
+async function cmdCtx(node: ProtocolInterfaceNode, basepath: string, args: string[]) {
+  const ref = args[0];
+  const field = args[1];
+  const value = args.slice(2).join(" ");
+  if (!ref || !field || !value) usage();
+  const addr = await mustResolve(node, basepath, ref);
+  const uri = await setContext(node, basepath, addr, field, value);
+  console.log(uri);
+}
+
+async function cmdRot(node: ProtocolInterfaceNode, basepath: string, args: string[]) {
+  const ref = args[0];
+  if (!ref) usage();
+  const note = arg(args.slice(1), "note") ?? "";
+  const addr = await mustResolve(node, basepath, ref);
+  const uri = await appendStatus(node, basepath, addr, "rotting", note);
+  console.log(uri);
+}
+
+async function cmdRename(node: ProtocolInterfaceNode, basepath: string, args: string[]) {
+  const ref = args[0];
+  const newTitle = args.slice(1).join(" ");
+  if (!ref || !newTitle) usage();
+  const addr = await mustResolve(node, basepath, ref);
+  await setTitle(node, basepath, addr, newTitle);
+  console.log(`renamed ${formatAddr(addr)}`);
+}
+
+async function cmdDelete(node: ProtocolInterfaceNode, basepath: string, args: string[]) {
+  const ref = args[0];
+  if (!ref) usage();
+  const hard = flag(args.slice(1), "hard");
+  const addr = await mustResolve(node, basepath, ref);
+  if (hard) {
+    const n = await hardDelete(node, basepath, addr);
+    console.log(`hard-deleted ${n} uris under ${formatAddr(addr)}`);
+  } else {
+    const uri = await appendStatus(node, basepath, addr, "abandoned", "deleted via cli");
+    console.log(uri);
+  }
 }
 
 async function main() {
   const [cmd, ...rest] = Deno.args;
   if (!cmd) usage();
-  const rig = await createRig();
+  const { rig, basepath } = await createRig();
   switch (cmd) {
     case "new":
-      await cmdNew(rig, rest);
+      await cmdNew(rig, basepath, rest);
       break;
     case "list":
-      await cmdList(rig, rest);
+      await cmdList(rig, basepath, rest);
       break;
     case "view":
-      await cmdView(rig, rest);
-      break;
-    case "update":
-      await cmdUpdate(rig, rest);
+      await cmdView(rig, basepath, rest);
       break;
     case "status":
-      await cmdStatus(rig, rest);
+      await cmdStatus(rig, basepath, rest);
+      break;
+    case "progress":
+      await cmdEntry(rig, basepath, rest, "progress");
+      break;
+    case "note":
+      await cmdEntry(rig, basepath, rest, "note");
       break;
     case "resource":
-      await cmdResource(rig, rest);
+      await cmdResource(rig, basepath, rest);
+      break;
+    case "tag":
+      await cmdTag(rig, basepath, rest);
+      break;
+    case "ctx":
+      await cmdCtx(rig, basepath, rest);
       break;
     case "rot":
-      await cmdRot(rig, rest);
+      await cmdRot(rig, basepath, rest);
+      break;
+    case "rename":
+      await cmdRename(rig, basepath, rest);
+      break;
+    case "delete":
+      await cmdDelete(rig, basepath, rest);
       break;
     default:
       usage();
