@@ -19,6 +19,9 @@
   "imports": {
     "@bandeira-tech/b3nd-core": "jsr:@bandeira-tech/b3nd-core@^0.22.0",
     "@bandeira-tech/b3nd-move": "jsr:@bandeira-tech/b3nd-move@^0.17.1",
+    "@bandeira-tech/b3nd-move/mcp/service": "jsr:@bandeira-tech/b3nd-move@^0.17.1/mcp/service",
+    "@bandeira-tech/b3nd-move/http/client": "jsr:@bandeira-tech/b3nd-move@^0.17.1/http/client",
+    "@bandeira-tech/b3nd-move/http/service": "jsr:@bandeira-tech/b3nd-move@^0.17.1/http/service",
     "@bandeira-tech/b3nd-save": "jsr:@bandeira-tech/b3nd-save@^0.8.1",
     "@bandeira-tech/b3nd-save/fs": "jsr:@bandeira-tech/b3nd-save@^0.8.1/fs",
     "@bandeira-tech/b3nd-save/memory": "jsr:@bandeira-tech/b3nd-save@^0.8.1/memory",

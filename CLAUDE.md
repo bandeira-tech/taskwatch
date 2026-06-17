@@ -21,7 +21,7 @@ The data shape is the protocol. The same `task://` URIs work in-process, over HT
 - **Cores stay puritan.** This package depends on `b3nd-core`, `b3nd-save`, `b3nd-move`, `b3nd-canon` directly. Don't pull the umbrella SDK — keep imports explicit and deduplicated.
 - **No silent coercion.** Programs validate writes against the protocol shape; bad writes are rejected, not patched.
 - **Storage is injected.** The rig factory takes a store; it doesn't default to one in tests or libraries. The CLI/serve/MCP entrypoints pick FS as their concrete default.
-- **PIN symmetry.** The same `receive` / `read` / `observe` calls work in-process (CLI), over HTTP (web UI), and over MCP (agents). Don't add a verb to one transport that isn't on the others.
+- **PIN symmetry.** The same `receive` / `read` / `observe` calls work in-process (CLI), over HTTP (web UI), and over MCP (agents). Don't add a verb to one transport that isn't on the others. In particular: **do not add taskwatch-specific MCP tools.** Agents talk to the rig through the universal b3nd PIN; the protocol shape is the surface. Knowledge of the shape lives in the skill, not in tool definitions.
 - **Content addressing for content.** Task descriptions and update bodies go through `hash://sha256/...`. Metadata documents reference them. Don't inline content into metadata — that destroys the separation.
 
 ## Entrypoints
@@ -29,8 +29,10 @@ The data shape is the protocol. The same `task://` URIs work in-process, over HT
 - **`mod.ts`** — default export is the rig factory. Consumable by `bnd node --rig path/to/mod.ts` and by anything that wants the rig in-process.
 - **`src/cli.ts`** — `taskwatch` CLI (add, list, view, update, resource). Talks to the rig in-process.
 - **`src/serve.ts`** — single process that hosts the rig over HTTP and serves the web UI from `web/dist/`.
-- **`.claude-plugin/mcp-server/mod.ts`** — MCP server with purpose-built agent tools (`taskwatch_create`, `taskwatch_update`, `taskwatch_list`, `taskwatch_view`). Wraps the rig.
+- **`.claude-plugin/mcp-server/mod.ts`** — MCP server. Exposes the rig as a **pure b3nd PIN** (`b3nd_receive`, `b3nd_read`, `b3nd_status`). No purpose-built taskwatch tools — the protocol shape **is** the surface area, and the skill at `.claude-plugin/skills/taskwatch/SKILL.md` teaches agents how to call the PIN with the right URIs and payload shapes.
 - **`web/`** — Vite + React + Tailwind UI. Talks to the rig over HTTP via `HttpClient`.
+
+The MCP server can front a remote rig by setting `TASKWATCH_BACKEND=<http url>`. In that case the local rig delegates everything to the remote node and the MCP becomes a thin shell.
 
 ## Storage scopes
 

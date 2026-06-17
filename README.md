@@ -17,9 +17,9 @@ Metadata and content are separated by design. The metadata document is the index
 
 ## Surfaces
 
-- **MCP** — `bnd node --mcp --rig ./mod.ts` or the bundled `.claude-plugin/mcp-server/mod.ts` (purpose-built `taskwatch_*` tools)
+- **MCP** — `bnd node --mcp --rig ./mod.ts` or the bundled `.claude-plugin/mcp-server/mod.ts`. Pure b3nd PIN: `b3nd_receive`, `b3nd_read`, `b3nd_status`. Agents follow the protocol shape (taught via the bundled skill); there are no taskwatch-specific tools.
 - **HTTP** — `deno task serve` hosts the rig + web UI together
-- **CLI** — `deno task cli list|add|view|update`
+- **CLI** — `deno task cli list|add|view|update` (ergonomic; for humans)
 - **In-process** — `import createRig from "@bandeira-tech/taskwatch"`
 
 ## Install as a Claude Code plugin
