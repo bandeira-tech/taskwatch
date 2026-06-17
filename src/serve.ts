@@ -18,7 +18,7 @@ import { extname, fromFileUrl, join } from "@std/path";
 
 import { createRig, defaultDataDir } from "./rig.ts";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 const HERE = fromFileUrl(new URL("../web", import.meta.url));
 
 function corsHeaders(): HeadersInit {

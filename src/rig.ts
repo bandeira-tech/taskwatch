@@ -32,7 +32,8 @@ export interface CreateRigOptions {
 }
 
 export function defaultBasepath(): string {
-  return Deno.env.get("TASKWATCH_BASEPATH") ?? DEFAULT_BASEPATH;
+  const env = Deno.env.get("TASKWATCH_BASEPATH");
+  return env && env.length > 0 ? env : DEFAULT_BASEPATH;
 }
 
 export function defaultDataDir(): string {

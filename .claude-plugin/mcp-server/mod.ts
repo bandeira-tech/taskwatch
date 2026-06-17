@@ -29,7 +29,7 @@ import { HttpClient } from "@bandeira-tech/b3nd-move/http/client";
 import { createRig, defaultBasepath, defaultDataDir } from "../../src/rig.ts";
 import { normalizeBasepath } from "../../src/protocol.ts";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 
 interface BuildResult {
   rig: Rig;

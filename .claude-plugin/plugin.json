@@ -1,6 +1,6 @@
 {
   "name": "taskwatch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Track what you and your agents are working on — a b3nd protocol where every task and every status update is a URI. The MCP server is a pure b3nd PIN; the skill teaches the protocol shape.",
   "author": {
     "name": "Bandeira Tech",
