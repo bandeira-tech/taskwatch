@@ -34,6 +34,7 @@ import {
   entriesListLocator,
   foldEntries,
   normalizeBasepath,
+  nowTs,
   parseTs,
   parseUri,
   parseUri as _parseUri,
@@ -353,6 +354,11 @@ export class TaskwatchNode extends ObserveEmitter implements ProtocolInterfaceNo
     const folded = foldEntries(entryRefs);
     const createdAt = parseTs(addr.ts);
     const updatedAt = folded.latestTs ? parseTs(folded.latestTs) : createdAt;
+
+    // Record the access as another entry on the timeline. Fire-and-forget
+    // via receive so observers see it; it shows up on the next view.
+    const accessUri = `${root}/entries/${nowTs()}-accessed`;
+    this.receive([[accessUri, ""]]).catch(() => {});
 
     return {
       basepath: this.basepath,

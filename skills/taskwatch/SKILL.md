@@ -35,7 +35,7 @@ Every URI starts with a **basepath** (operator-chosen) followed by a **type** se
 - **`{ts}`** — `YYYYMMDDhhmmss` in UTC. The task's create-time second. Sortable, unique.
 - **`{slug}`** — lowercase URL-safe slug from the title. `[a-z0-9-]`, max 60 chars. Slug never changes after creation.
 - **`{ts2}`** — entry's own timestamp in `YYYYMMDDhhmmss`. Monotonic; no shared counter to bump.
-- **`{kind}`** — the entry kind embedded in the URI. Convention: `progress`, `note`, `handoff`, `rot`, `supersede`, `title-changed`, `description-changed`, or `status-{value}` where `{value}` ∈ `active|paused|blocked|done|abandoned|rotting|superseded`.
+- **`{kind}`** — the entry kind embedded in the URI. Convention: `progress`, `note`, `handoff`, `rot`, `supersede`, `title-changed`, `description-changed`, `accessed` (auto-written by the rig when a task is viewed; excluded from "last update"), or `status-{value}` where `{value}` ∈ `active|paused|blocked|done|abandoned|rotting|superseded`.
 
 Every payload is plain UTF-8 text. No JSON, no envelopes, no counters.
 

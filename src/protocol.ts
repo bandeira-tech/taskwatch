@@ -57,6 +57,7 @@ export const ENTRY_KINDS = [
   "supersede",
   "title-changed",
   "description-changed",
+  "accessed",
   // status-{value} is a family — see statusFromEntryKind below
 ] as const;
 
@@ -401,7 +402,10 @@ export function foldEntries(entries: EntryRef[]): {
   let latestStatus: { ts: string; status: TaskStatus } | undefined;
   let latestTs: string | undefined;
   for (const e of entries) {
-    if (!latestTs || e.entryTs > latestTs) latestTs = e.entryTs;
+    // `accessed` records a read, not progress — exclude from "last update".
+    if (e.entryKind !== "accessed" && (!latestTs || e.entryTs > latestTs)) {
+      latestTs = e.entryTs;
+    }
     const st = statusFromEntryKind(e.entryKind);
     if (st && (!latestStatus || e.entryTs > latestStatus.ts)) {
       latestStatus = { ts: e.entryTs, status: st };
