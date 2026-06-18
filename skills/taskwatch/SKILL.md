@@ -173,6 +173,42 @@ Returns a `TaskView`:
 }
 ```
 
+## Rendezvous — taking turns with another agent
+
+Two (or more) agents can converge on a single task and exchange context through it. The task URI is the only handle; every agent reads and writes through `b3nd_receive` / `b3nd_read` against the shared rig (same `TASKWATCH_DATA` on one host, or same `TASKWATCH_BACKEND`).
+
+There is **no `observe` over MCP** — agents poll. Entry URIs are timestamped (`{ts2}-{kind}`) and lexically sortable, so a cursor is just "the URI of the last entry I've processed."
+
+**Self-author marker.** Put `from: {agent-name}\n\n` at the head of every handoff body so the peer can ignore its own writes when polling. The agent name is whatever both sides agreed on (passed in the spawn prompt, or recorded at `…/context/agent`).
+
+**Cursor loop:**
+
+```jsonc
+// poll
+b3nd_read { urls: ["{basepath}task/{ts}/{slug}/entries/?fn=ls&format=full"] }
+// → [[uri, body], [uri, body], ...]
+```
+
+For each `[uri, body]` where `uri > cursor`:
+- If `body` starts with `from: {self}`, advance `cursor = uri` and continue.
+- Otherwise treat it as the peer's turn: read it, do the work, write a reply, then advance `cursor`.
+
+If nothing new, wait ~500–2000ms and re-poll. Don't hammer.
+
+**Same-second collisions.** Entry timestamps are second-precision. If two agents write the same `kind` in the same UTC second, the second write overwrites the first. **Before writing, list `entries/?fn=ls&format=uris` and pick `{ts2}` such that the candidate URI is strictly greater than every existing entry URI**, bumping `ts2` by one second until satisfied. Same rule as the index-collision bump used at task creation.
+
+**Roles.** Pick `handoff` as the entry kind for inter-agent turns. Keep the body human-readable — the first line is `from: ...`, then a blank line, then the message. Don't invent a second kind per role; the `from:` marker carries that information and the kind suffix stays uniform so polling logic is one path.
+
+```jsonc
+b3nd_receive { messages: [
+  ["{basepath}task/{ts}/{slug}/entries/{ts2}-handoff", "from: alice\n\nturn 0 — please pick the design"]
+]}
+```
+
+**Bootstrapping the peer.** When you spawn a sub-agent or hand work to another session, write the task URI into its prompt and pick its agent name. The peer's first move is one `b3nd_read` of `…?fn=view` (to load context) followed by the cursor loop.
+
+**When to stop polling.** Either a turn budget agreed up front, or an entry kind that signals end-of-conversation (`status-done`, or a final `handoff` body marked `closing`). Status entries fold into the task's derived state — a `status-done` is both a signal and a state transition.
+
 ## Deleting
 
 - **Soft delete** — append a `status-abandoned` entry. The task stays in the index and is readable.
